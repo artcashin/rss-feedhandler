@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>A Substack</title>
+    <link>https://ex.substack.com</link>
+    <item>
+      <title>Markets close higher</title>
+      <link>https://ex.substack.com/p/markets</link>
+      <guid isPermaLink="false">sub:1</guid>
+      <dc:creator>Bob Pisani</dc:creator>
+      <pubDate>Tue, 21 Jul 2026 12:02:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>No byline here</title>
+      <guid isPermaLink="false">sub:2</guid>
+    </item>
+    <item>
+      <title>Blank byline</title>
+      <guid isPermaLink="false">sub:3</guid>
+      <dc:creator>   </dc:creator>
+    </item>
+  </channel>
+</rss>

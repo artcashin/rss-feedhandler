@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>News ticker</title>
+<style>
+  :root {
+    --bg: #0d0d0d; --fg: #e6e6e6; --dim: #8a8a8a; --line: #262626;
+    --hl: #ffb020; --ok: #3ddc84; --bad: #e2484a;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#fff; --fg:#111; --dim:#6b6b6b; --line:#e3e3e3;
+            --hl:#a35a00; --ok:#127a3d; --bad:#a32d2d; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg); display: flex; flex-direction: column;
+    font: 13px/1.35 ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  }
+  #main { flex: 1 1 auto; position: relative; min-height: 0; }
+  #dot { display:inline-block; width:6px; height:6px; border-radius:50%;
+         background: var(--bad); margin-right:5px; }
+  #dot.live { background: var(--ok); }
+  #list { position: absolute; inset: 0; overflow-y: scroll; overflow-x: hidden; }
+  a.row {
+    display: flex; gap: 8px; align-items: center; padding: 5px 8px;
+    border-bottom: 1px solid var(--line); text-decoration: none; color: inherit;
+    cursor: pointer;
+  }
+  a.row:hover { background: rgba(127,127,127,.12); }
+  a.row:focus-visible { outline: 2px solid var(--hl); outline-offset: -2px; }
+  .t { font: 11px ui-monospace, Menlo, monospace; color: var(--dim); flex: none;
+       min-width: 38px; }
+  .fav { width: 14px; height: 14px; border-radius: 3px; flex: none; object-fit: contain;
+         background: rgba(127,127,127,.18); }
+  .favf { width: 14px; height: 14px; border-radius: 3px; flex: none;
+          background: rgba(127,127,127,.18); color: var(--dim); font-size: 10px;
+          font-weight: 600; text-align: center; line-height: 14px; }
+  .h { flex: 1 1 auto; }
+  .h.hl { color: var(--hl); }
+  #pill {
+    position: sticky; top: 0; z-index: 2; display: none; text-align: center;
+    padding: 3px; font-size: 11px; cursor: pointer;
+    background: var(--hl); color: var(--bg);
+  }
+  #empty { padding: 10px 8px; color: var(--dim); }
+
+  .statusbar {
+    flex: none; display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+    border-top: 1px solid var(--line);
+    font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim);
+  }
+  .statusbar .count { margin-left: auto; }
+  .gear {
+    font: 13px/1 ui-monospace, Menlo, monospace; color: var(--dim); background: none;
+    border: none; cursor: pointer; padding: 2px 4px; border-radius: 4px;
+  }
+  .gear:hover { color: var(--hl); }
+
+  .tabs {
+    flex: none; display: flex; overflow-x: auto; overflow-y: hidden;
+    border-top: 1px solid var(--line);
+  }
+  .tab {
+    flex: none; padding: 6px 10px; cursor: pointer; color: var(--dim);
+    font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap;
+  }
+  .tab:hover { color: var(--fg); }
+  .tab.active { color: var(--hl); }
+
+  .config {
+    position: absolute; inset: 0; z-index: 4; display: none; flex-direction: column;
+    background: var(--bg);
+  }
+  .config.open { display: flex; }
+  .config-head {
+    flex: none; display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 8px; border-bottom: 1px solid var(--line);
+    font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim);
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+  .config-head button { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 13px; }
+  .config-head button:hover { color: var(--hl); }
+  #cfglist { flex: 1 1 auto; overflow-y: auto; }
+  .cfg-row { display: flex; gap: 8px; align-items: flex-start; padding: 7px 8px;
+             border-bottom: 1px solid var(--line); }
+  .cfg-name { font-weight: 600; font-size: 12px; }
+  .cfg-url { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim);
+             word-break: break-all; margin-top: 2px; }
+</style>
+</head>
+<body>
+<div id="main">
+  <div id="list">
+    <div id="pill"></div>
+    <div id="empty">loading headlines</div>
+  </div>
+  <div id="config" class="config" aria-label="Feed settings">
+    <div class="config-head">
+      <span>Subscribed feeds</span>
+      <button id="cfgclose" aria-label="Close settings">&#x2715;</button>
+    </div>
+    <div id="cfglist"></div>
+  </div>
+</div>
+<div id="tabs" class="tabs"></div>
+<div class="statusbar" id="statusbar">
+  <span id="dot"></span><span id="state">connecting</span>
+  <span id="count" class="count"></span>
+  <button class="gear" id="gear" title="Feed settings" aria-label="Open feed settings">&#x2699;</button>
+</div>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var user = params.get("user") || "";
+  var token = params.get("token") || "";
+  // Kept in this closure only. It is never assigned to textContent, an
+  // attribute, or a console call -- the only place it may appear is a request
+  // URL.
+  var auth = "user=" + encodeURIComponent(user) +
+             (token ? "&token=" + encodeURIComponent(token) : "");
+  var list = document.getElementById("list");
+  var pill = document.getElementById("pill");
+  var empty = document.getElementById("empty");
+  var dot = document.getElementById("dot");
+  var state = document.getElementById("state");
+  var count = document.getElementById("count");
+  var gear = document.getElementById("gear");
+  var config = document.getElementById("config");
+  var cfglist = document.getElementById("cfglist");
+  var cfgclose = document.getElementById("cfgclose");
+  var tabs = document.getElementById("tabs");
+
+  var newestCursor = null, newestKey = null, oldestCursor = null, pending = 0;
+  var loading = false, exhausted = false, ws = null, backoff = 1000;
+  var seen = new Set();
+  var filling = false, pendingLive = [];
+  // feed_id -> {name, favicon, group}, built once from /api/feeds. A row
+  // whose feed_id isn't in here yet (or whose feed has no favicon) falls
+  // back to a plain letter -- the widget makes no external image requests
+  // either way.
+  var feedMap = {};
+  // Active tab bar group; null means "All". Set from tab clicks only.
+  var activeGroup = null;
+  // { el, group } pairs for the rendered tab bar, so clicking one can update
+  // every tab's active styling.
+  var tabEls = [];
+
+  function noteNewest(a) {
+    var key = [a.sort_at, a.id];
+    if (!newestKey || key[0] > newestKey[0] ||
+        (key[0] === newestKey[0] && key[1] > newestKey[1])) {
+      newestKey = key;
+      newestCursor = a.cursor;
+    }
+  }
+
+  function fmt(ts) {
+    var d = new Date(ts * 1000);
+    return String(d.getHours()).padStart(2, "0") + ":" +
+           String(d.getMinutes()).padStart(2, "0");
+  }
+
+  function safeHref(url) {
+    if (typeof url !== "string") return "#";
+    var s = url.trim();
+    return (/^https?:\/\//i).test(s) ? s : "#";
+  }
+
+  // Opens the article in the user's own browser tab, where they're already
+  // signed in. No credential of ours travels with it -- window.open just
+  // navigates a new tab to the plain article URL.
+  function openArticle(href) {
+    if (!href || href === "#") return;
+    window.open(href, "_blank", "noopener");
+  }
+
+  function iconFor(feedId, fallbackName) {
+    var feed = feedMap[feedId];
+    var name = (feed && feed.name) || fallbackName || "";
+    if (feed && feed.favicon) {
+      var img = document.createElement("img");
+      img.className = "fav";
+      img.src = feed.favicon;
+      img.alt = name;
+      return img;
+    }
+    var fb = document.createElement("span");
+    fb.className = "favf";
+    fb.textContent = (name.charAt(0) || "?").toUpperCase();
+    return fb;
+  }
+
+  // A row is visible when the tab bar's active group is "All" (null), or
+  // when the row's feed belongs to that group.
+  function isVisible(feedId) {
+    if (activeGroup === null) return true;
+    var feed = feedMap[feedId];
+    return !!(feed && feed.group === activeGroup);
+  }
+
+  function row(a) {
+    var el = document.createElement("a");
+    el.className = "row";
+    el.href = safeHref(a.link);
+    el.rel = "noopener noreferrer";
+    el.title = new Date(a.sort_at * 1000).toString();
+    // Stashed so a later tab click can re-evaluate this row's visibility
+    // without needing a side table -- does not touch el.children, so the
+    // [time, icon, headline] child order the driver depends on is untouched.
+    el.setAttribute("data-feed", a.feed_id);
+    var t = document.createElement("span"); t.className = "t";
+    t.textContent = fmt(a.sort_at);
+    var icon = iconFor(a.feed_id, a.source);
+    var h = document.createElement("span");
+    h.className = "h" + (a.highlighted ? " hl" : "");
+    h.textContent = a.title;
+    el.appendChild(t); el.appendChild(icon); el.appendChild(h);
+    el.style.display = isVisible(a.feed_id) ? "" : "none";
+    // A single click must never navigate; only a double-click (or Enter on a
+    // focused row) opens the article, in a new tab, via openArticle above.
+    el.onclick = function (e) { if (e && e.preventDefault) e.preventDefault(); };
+    el.ondblclick = function (e) {
+      if (e && e.preventDefault) e.preventDefault();
+      openArticle(el.href);
+    };
+    el.onkeydown = function (e) {
+      if (!e || e.key !== "Enter") return;
+      if (e.preventDefault) e.preventDefault();
+      openArticle(el.href);
+    };
+    return el;
+  }
+
+  function atTop() { return list.scrollTop <= 2; }
+
+  function prepend(items) {
+    var fresh = items.filter(function (a) { return !seen.has(a.id); });
+    if (!fresh.length) return;
+    fresh.forEach(function (a) { seen.add(a.id); });
+    empty.style.display = "none";
+    var wasAtTop = atTop();
+    var before = list.scrollHeight;
+    var frag = document.createDocumentFragment();
+    fresh.sort(function (a, b) { return a.sort_at - b.sort_at; });
+    // Only rows visible under the active tab count as "new" for the pill --
+    // a live headline for a different group must not bump it.
+    var freshVisible = 0;
+    fresh.forEach(function (a) {
+      noteNewest(a);
+      if (isVisible(a.feed_id)) freshVisible++;
+      frag.insertBefore(row(a), frag.firstChild);
+    });
+    pill.parentNode.insertBefore(frag, pill.nextSibling);
+    if (wasAtTop) {
+      list.scrollTop = 0;
+    } else {
+      list.scrollTop += list.scrollHeight - before;
+      if (freshVisible > 0) {
+        pending += freshVisible;
+        pill.textContent = pending + " new " +
+          (pending === 1 ? "headline" : "headlines") + " ↑";
+        pill.style.display = "block";
+      }
+    }
+  }
+
+  function append(items) {
+    if (!items.length) return;
+    empty.style.display = "none";
+    items.forEach(function (a) {
+      if (seen.has(a.id)) return;
+      seen.add(a.id);
+      noteNewest(a);
+      list.appendChild(row(a));
+    });
+  }
+
+  pill.addEventListener("click", function () {
+    list.scrollTop = 0; pending = 0; pill.style.display = "none";
+  });
+  list.addEventListener("scroll", function () {
+    if (atTop()) { pending = 0; pill.style.display = "none"; }
+    if (list.scrollTop + list.clientHeight >= list.scrollHeight - 40) loadOlder();
+  });
+
+  var denied = false;
+
+  function api(qs) {
+    return fetch("/api/news?" + auth + (qs ? "&" + qs : "")).then(function (r) {
+      if (r.status === 401) throw new Error("denied");
+      if (!r.ok) throw new Error("http " + r.status);
+      return r.json();
+    });
+  }
+
+  function deny() {
+    if (denied) return;
+    denied = true;
+    exhausted = true;
+    setLive(false, "unauthorized");
+    empty.textContent = "not authorized";
+    empty.style.display = "block";
+    if (ws) { try { ws.close(); } catch (e) {} }
+  }
+
+  var loadingPromise = null;
+
+  function loadOlder() {
+    if (loading) return loadingPromise;
+    if (exhausted || denied) return null;
+    loading = true;
+    // Resolves true on success, false on failure. ensureFilled's chain
+    // recurses only on true: a 500/429 page must END the backfill rather
+    // than resolve-as-success and immediately re-fire the identical
+    // request up to the page cap -- an unthrottled retry burst against a
+    // server that is already struggling. Scroll-triggered loads retry
+    // naturally (each scroll event calls loadOlder afresh).
+    loadingPromise = api(
+      "limit=50" + (oldestCursor ? "&before=" + encodeURIComponent(oldestCursor) : "")
+    ).then(function (body) {
+      append(body.articles);
+      if (body.articles.length) {
+        oldestCursor = body.articles[body.articles.length - 1].cursor;
+      }
+      if (!body.next_cursor) exhausted = true;
+      if (!seen.size) empty.textContent = "no headlines yet";
+      loading = false;
+      return true;
+    }).catch(function (e) {
+      loading = false;
+      if (e && e.message === "denied") deny();
+      return false;
+    });
+    return loadingPromise;
+  }
+
+  function visibleRowCount() {
+    var n = 0;
+    for (var i = 0; i < list.children.length; i++) {
+      var el = list.children[i];
+      if (el.getAttribute("data-feed") === null) continue;
+      if (el.style.display !== "none") n++;
+    }
+    return n;
+  }
+
+  // A tab switch can select a group whose rows all sit deeper in history
+  // than anything loaded so far. The filtered pane then has no scrollbar,
+  // so the scroll handler can never ask for more -- the tab would stay
+  // blank forever. Page backward until the active view holds a screenful,
+  // history runs out, or the page cap trips (a group with almost nothing
+  // in retention would otherwise walk the whole archive on every switch).
+  var MIN_VISIBLE_ROWS = 50;
+  var MAX_BACKFILL_PAGES = 40;
+
+  function ensureFilled(page) {
+    page = page || 1;
+    if (denied || exhausted || page > MAX_BACKFILL_PAGES) return;
+    if (visibleRowCount() >= MIN_VISIBLE_ROWS) return;
+    var p = loadOlder();
+    if (p) p.then(function (ok) { if (ok) ensureFilled(page + 1); });
+  }
+
+  function flushPendingLive() {
+    var buffered = pendingLive;
+    pendingLive = [];
+    if (buffered.length) prepend(buffered);
+  }
+
+  // The gap after a reconnect can be larger than one page, and it sits in the
+  // MIDDLE of the list, so backward scrollback would never reach it. Follow
+  // next_cursor until the server says there is nothing newer left.
+  var MAX_FILL_PAGES = 50;
+
+  function fillPage(cursor, page) {
+    if (page > MAX_FILL_PAGES) {
+      console.warn("gap fill stopped after " + MAX_FILL_PAGES + " pages");
+      return Promise.resolve();
+    }
+    return api("limit=200&after=" + encodeURIComponent(cursor)).then(function (body) {
+      prepend(body.articles);
+      if (body.next_cursor) return fillPage(body.next_cursor, page + 1);
+    });
+  }
+
+  function fillGap() {
+    if (!newestCursor || filling) return;
+    filling = true;
+    fillPage(newestCursor, 1).catch(function (e) {
+      if (e && e.message === "denied") deny();
+    }).then(function () {
+      filling = false;
+      flushPendingLive();
+    });
+  }
+
+  function setLive(on, label) {
+    dot.className = on ? "live" : "";
+    state.textContent = label;
+  }
+
+  function connect() {
+    if (denied) return;
+    var proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(proto + "//" + location.host + "/ws/news?" + auth);
+    ws.onopen = function () { backoff = 1000; setLive(true, "live"); fillGap(); };
+    ws.onmessage = function (ev) {
+      var article = JSON.parse(ev.data);
+      if (filling) { pendingLive.push(article); } else { prepend([article]); }
+    };
+    ws.onclose = function (ev) {
+      // 4401 is the server's one rejection code. It is not fixable by waiting,
+      // and an endless reconnect loop against a rejecting server is a denial of
+      // service we would be inflicting on ourselves.
+      if (denied || (ev && ev.code === 4401)) {
+        deny();
+        return;
+      }
+      setLive(false, "reconnecting");
+      setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, 30000);
+    };
+    ws.onerror = function () { try { ws.close(); } catch (e) {} };
+  }
+
+  function renderFeedSettings(feeds) {
+    feeds.forEach(function (f) {
+      var r = document.createElement("div"); r.className = "cfg-row";
+      var icon = iconFor(f.id, f.name);
+      var meta = document.createElement("div");
+      var nm = document.createElement("div"); nm.className = "cfg-name";
+      nm.textContent = f.name || "";
+      var url = document.createElement("div"); url.className = "cfg-url";
+      url.textContent = f.url || "";
+      meta.appendChild(nm); meta.appendChild(url);
+      r.appendChild(icon); r.appendChild(meta);
+      cfglist.appendChild(r);
+    });
+  }
+
+  function toggleConfig(open) {
+    var show = open === undefined ? config.className.indexOf("open") < 0 : open;
+    config.className = "config" + (show ? " open" : "");
+  }
+  gear.onclick = function () { toggleConfig(); };
+  cfgclose.onclick = function () { toggleConfig(false); };
+
+  // Re-evaluates every existing row's visibility against the active group.
+  // list.children is a live HTMLCollection in a real browser (no .forEach),
+  // so this walks it by index rather than with an array method. Selects rows
+  // by the data-feed attribute (only row() sets it) rather than tagName --
+  // Element.tagName is uppercase ("A") in a real browser, so comparing
+  // against a lowercase literal would silently skip every row.
+  function applyFilter() {
+    for (var i = 0; i < list.children.length; i++) {
+      var el = list.children[i];
+      if (el.getAttribute("data-feed") === null) continue;
+      el.style.display = isVisible(el.getAttribute("data-feed")) ? "" : "none";
+    }
+  }
+
+  function updateTabClasses() {
+    tabEls.forEach(function (te) {
+      te.el.className = "tab" + (te.group === activeGroup ? " active" : "");
+    });
+  }
+
+  function selectGroup(group) {
+    activeGroup = group;
+    applyFilter();
+    updateTabClasses();
+    list.scrollTop = 0;
+    pending = 0;
+    pill.style.display = "none";
+    ensureFilled();
+  }
+
+  function makeTab(label, group) {
+    var t = document.createElement("span");
+    t.className = "tab";
+    t.textContent = label;
+    t.onclick = function () { selectGroup(group); };
+    tabEls.push({ el: t, group: group });
+    return t;
+  }
+
+  // groups is every distinct non-null feed group, in first-seen order from
+  // /api/feeds. If none exists, the tab bar hides entirely -- a lone "All"
+  // tab is pointless.
+  function renderTabs(groups) {
+    if (!groups.length) { tabs.style.display = "none"; return; }
+    tabs.appendChild(makeTab("All", null));
+    groups.forEach(function (g) { tabs.appendChild(makeTab(g, g)); });
+    updateTabClasses();
+  }
+
+  function loadFeeds() {
+    return fetch("/api/feeds?" + auth)
+      .then(function (r) {
+        if (r.status === 401) { deny(); return null; }
+        return r.json();
+      })
+      .then(function (b) {
+        if (!b) return;
+        var feeds = b.feeds || [];
+        feedMap = {};
+        var groups = [];
+        var seenGroup = {};
+        feeds.forEach(function (f) {
+          feedMap[f.id] = { name: f.name, favicon: f.favicon, group: f.group || null };
+          if (f.group && !seenGroup[f.group]) {
+            seenGroup[f.group] = true;
+            groups.push(f.group);
+          }
+        });
+        count.textContent = feeds.length + " feeds";
+        renderFeedSettings(feeds);
+        renderTabs(groups);
+      })
+      .catch(function () {});
+  }
+
+  loadFeeds().then(function () {
+    var p = loadOlder();
+    if (p) p.then(function () { ensureFilled(); });
+    connect();
+  });
+})();
+</script>
+</body>
+</html>

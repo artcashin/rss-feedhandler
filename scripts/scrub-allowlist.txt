@@ -1,0 +1,9 @@
+# Known-benign literals the generic patterns would otherwise flag.
+# Documentation example IP in nas-setup.sh usage comment:
+PUBLIC_HOST=192.168.1.50 PORT=9000 sh nas-setup.sh
+# Synthetic test IP convention shared across the series:
+100.100.100.100
+# Generic NAS-convention default paths (a common container-manager share
+# layout, not a machine-specific secret); override BASE for other layouts:
+BASE="${BASE:-/share/Container/rss-ticker}"
+# /share/Container/<app>/... mount without a manual `chmod 777` on the NAS.

@@ -1,0 +1,31 @@
+services:
+  ticker:
+    image: ghcr.io/artcashin/rss-ticker:latest
+    build: .
+    restart: unless-stopped
+    ports:
+      # Bound to loopback only. This server authenticates over plain HTTP --
+      # tokens travel in the URL -- and TLS is mandatory (see README), so the
+      # plaintext port must never be reachable except through a reverse proxy
+      # on this host that terminates TLS in front of it. "0.0.0.0:8088:8088"
+      # (or the bare "8088:8088" form) publishes the port on every interface
+      # ahead of the host firewall, making the proxy optional from an
+      # attacker's side rather than mandatory.
+      - "127.0.0.1:8088:8088"
+    environment:
+      # Writes and the health detail. Operator only.
+      TICKER_ADMIN_KEY: ${TICKER_ADMIN_KEY:?set TICKER_ADMIN_KEY}
+      # widgets.json only. This is what you paste into OpenBB Workspace, so it
+      # must not be the admin key -- startup fails if they are equal.
+      TICKER_MANIFEST_KEY: ${TICKER_MANIFEST_KEY:?set TICKER_MANIFEST_KEY}
+      # One per user id in config.yaml. The `:?` form makes a missing token a
+      # compose-level failure with a readable message, before the container
+      # starts and the config loader has to say it less helpfully.
+      TICKER_TOKEN_ART: ${TICKER_TOKEN_ART:?set TICKER_TOKEN_ART}
+      LOG_LEVEL: INFO
+    volumes:
+      - ticker-data:/data
+      - ./config.yaml:/config/config.yaml:ro
+
+volumes:
+  ticker-data:

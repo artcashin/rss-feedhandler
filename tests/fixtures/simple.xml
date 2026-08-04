@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Simple</title>
+<item>
+  <title>Fed holds rates steady</title>
+  <link>https://ex.example/a</link>
+  <guid>urn:a</guid>
+  <description>The central bank left rates unchanged.</description>
+  <pubDate>Mon, 21 Jul 2026 14:02:00 GMT</pubDate>
+</item>
+<item>
+  <title>Oil slips below $70</title>
+  <link>https://ex.example/b</link>
+  <guid>urn:b</guid>
+  <pubDate>Mon, 21 Jul 2026 13:40:00 GMT</pubDate>
+</item>
+</channel></rss>

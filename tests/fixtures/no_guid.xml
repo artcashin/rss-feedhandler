@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<rss version="2.0"><channel><title>No guid</title>
+<item><title>Headline with link only</title><link>https://ex.example/c</link></item>
+<item><title>Headline with nothing else</title></item>
+<item><link>https://ex.example/d</link></item>
+</channel></rss>
