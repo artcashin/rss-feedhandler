@@ -1,6 +1,6 @@
 # rss-ticker
 
-*Companion code for Adventures in OpenBB, Ep. 9: "All the News That Fits, We Print."*
+*Companion code for Adventures in OpenBB, Ep. 8: "All the News That Fits, We Print."*
 
 Real-time RSS news ticker server with an OpenBB Workspace widget.
 

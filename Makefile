@@ -1,5 +1,5 @@
 IMAGE   ?= ghcr.io/artcashin/rss-ticker
-TAG     ?= 9.0.0
+TAG     ?= 8.0.0
 BUILDER ?= rss-ticker-builder
 
 .PHONY: test lint build buildx run

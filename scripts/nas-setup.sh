@@ -16,7 +16,7 @@
 set -eu
 
 BASE="${BASE:-/share/Container/rss-ticker}"
-IMAGE="${IMAGE:-ghcr.io/artcashin/rss-ticker:9.0.0}"
+IMAGE="${IMAGE:-ghcr.io/artcashin/rss-ticker:8.0.0}"
 PORT="${PORT:-8088}"
 NAME="${NAME:-rss-ticker}"
 USER_ID="${USER_ID:-art}"
