@@ -17,14 +17,17 @@ max_concurrent_polls: 8
 #   python -c "import secrets; print(secrets.token_urlsafe(32))"
 # Keep it in the environment, never in this file. A user with no token is a
 # startup error, not an open account.
+# Be judicious with poll intervals: publishers monitor, and an over-eager
+# poller gets throttled or disconnected -- sometimes mistaken for an attack.
+# Conditional GETs make polite polling cheap; they don't make rude polling safe.
 users:
   - id: art
     name: Art
     token: ${TICKER_TOKEN_ART}
     feeds:
-      - {url: "https://feeds.bloomberg.com/markets/news.rss", name: Bloomberg Markets, group: Markets, poll_interval_s: 15}
-      - {url: "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain", name: WSJ Markets, group: Markets, poll_interval_s: 15}
-      - {url: "https://markets.businessinsider.com/rss/news", name: Business Insider, group: Markets, poll_interval_s: 15}
+      - {url: "https://feeds.bloomberg.com/markets/news.rss", name: Bloomberg Markets, group: Markets, poll_interval_s: 90}
+      - {url: "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain", name: WSJ Markets, group: Markets, poll_interval_s: 90}
+      - {url: "https://markets.businessinsider.com/rss/news", name: Business Insider, group: Markets, poll_interval_s: 90}
       # NYT sends no ETag or Last-Modified, so a poll can never be a cheap 304 --
       # every one re-downloads ~100KB. Its CDN copy is max-age=300 anyway, so a
       # faster interval would buy no freshness.
