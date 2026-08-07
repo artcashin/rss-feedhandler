@@ -296,3 +296,104 @@ async def test_refresh_favicons_one_feeds_failure_does_not_stop_the_others(monke
         assert store.get_feed(good).favicon == "data:image/png;base64,Zm9v"
     finally:
         store.close()
+
+
+# --- known-provider domain mapping + browser-like headers ---
+#
+# Verified against the real sites (2026-08-06): feeds.bloomberg.com,
+# feeds.content.dowjones.io and search.cnbc.com are RSS-syndication hosts,
+# not real websites -- every request to them (favicon.ico, homepage,
+# regardless of headers) returns 403/404/503. The publisher's real public
+# domain (bloomberg.com, wsj.com, cnbc.com) works, but wsj.com and cnbc.com
+# both need to look like a real browser first; bloomberg.com doesn't care.
+
+async def test_known_provider_host_resolves_against_the_real_domain():
+    def handler(request):
+        assert str(request.url) == "https://bloomberg.com/favicon.ico"
+        return httpx.Response(
+            200, content=SMALL_PNG, headers={"Content-Type": "image/png"}
+        )
+
+    out = await call(handler, feed_url="https://feeds.bloomberg.com/markets/news.rss")
+    assert out is not None
+    _b64_roundtrip(out, SMALL_PNG, "image/png")
+
+
+async def test_known_provider_request_carries_browser_like_headers():
+    seen = {}
+
+    def handler(request):
+        seen["user_agent"] = request.headers.get("user-agent", "")
+        seen["accept_language"] = request.headers.get("accept-language")
+        return httpx.Response(
+            200, content=SMALL_PNG, headers={"Content-Type": "image/png"}
+        )
+
+    await call(handler, feed_url="https://search.cnbc.com/rs/search/view.xml")
+    # A plain httpx client identifies itself as "python-httpx/..." by default;
+    # a real browser UA never contains that string.
+    assert "python-httpx" not in seen["user_agent"].lower()
+    assert seen["user_agent"] != ""
+    assert seen["accept_language"] is not None
+
+
+async def test_unmapped_host_gets_no_special_headers():
+    seen = {}
+
+    def handler(request):
+        seen["accept_language"] = request.headers.get("accept-language")
+        return httpx.Response(
+            200, content=SMALL_PNG, headers={"Content-Type": "image/png"}
+        )
+
+    await call(handler, feed_url="https://x.example/rss")
+    # An ordinary feed must not suddenly start impersonating a browser --
+    # the header spoofing is scoped to the known-provider list only.
+    assert seen["accept_language"] is None
+
+
+async def test_known_provider_falls_back_to_homepage_with_headers_on_every_hop():
+    # Mirrors CNBC's real shape: favicon.ico 404s on the mapped domain, the
+    # homepage's <link rel="icon"> points at a THIRD host (a CDN), and that
+    # final fetch must still carry the browser headers.
+    seen_uas = []
+
+    def handler(request):
+        seen_uas.append(request.headers.get("user-agent", ""))
+        url = str(request.url)
+        if url == "https://cnbc.com/favicon.ico":
+            return httpx.Response(404)
+        if url == "https://cnbc.com/":
+            return httpx.Response(
+                200,
+                content=b'<html><head><link rel="icon" '
+                b'href="https://fm.cnbc.com/logo.ico"></head></html>',
+                headers={"Content-Type": "text/html"},
+            )
+        if url == "https://fm.cnbc.com/logo.ico":
+            return httpx.Response(
+                200, content=SMALL_PNG, headers={"Content-Type": "image/png"}
+            )
+        raise AssertionError(f"unexpected request: {url}")
+
+    out = await call(handler, feed_url="https://search.cnbc.com/rs/search/view.xml")
+    assert out is not None
+    _b64_roundtrip(out, SMALL_PNG, "image/png")
+    assert len(seen_uas) == 3
+    assert all("python-httpx" not in ua.lower() and ua != "" for ua in seen_uas)
+
+
+async def test_cap_accepts_a_real_world_101kb_icon():
+    # CNBC's actual favicon.ico, observed 2026-08-06: a 101,440-byte
+    # multi-resolution .ico bundle. The cap must clear it with room to spare.
+    real_cnbc_icon_size = 101_440
+    assert MAX_FAVICON_BYTES >= real_cnbc_icon_size
+
+    body = b"\x00\x00\x01\x00" + b"x" * (real_cnbc_icon_size - 4)
+
+    def handler(request):
+        return httpx.Response(200, content=body, headers={"Content-Type": "image/x-icon"})
+
+    out = await call(handler, feed_url="https://x.example/rss")
+    assert out is not None
+    _b64_roundtrip(out, body, "image/x-icon")

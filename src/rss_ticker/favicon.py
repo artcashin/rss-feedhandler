@@ -20,9 +20,35 @@ log = logging.getLogger(__name__)
 # Short total deadline so a slow/hostile host can't stall a poll cycle.
 FAVICON_TIMEOUT_S = 10.0
 # Favicons are small; one is stored per feed (as a data URI, in the feeds
-# table) and later sent whole in /api/feeds, so 50 KB raw is a safe ceiling
-# that keeps that payload bounded without rejecting any real-world icon.
-MAX_FAVICON_BYTES = 50 * 1024
+# table) and later sent whole in /api/feeds, so 128 KB raw is a safe ceiling
+# that keeps that payload bounded without rejecting a real-world icon --
+# CNBC's own favicon.ico is a 101 KB multi-resolution bundle (verified
+# 2026-08-06), and the previous 50 KB cap silently rejected it.
+MAX_FAVICON_BYTES = 128 * 1024
+
+# RSS-syndication hosts that are not real websites and refuse every request
+# outright (verified 2026-08-06: 403/404/503, independent of headers). The
+# publisher's real public domain resolves a favicon fine.
+_KNOWN_PROVIDER_HOSTS: dict[str, str] = {
+    "feeds.bloomberg.com": "bloomberg.com",
+    "feeds.content.dowjones.io": "wsj.com",
+    "search.cnbc.com": "cnbc.com",
+}
+
+# Two of the three known-provider domains (wsj.com, cnbc.com) 403 a request
+# that doesn't look like a browser; bloomberg.com doesn't care either way.
+# Applied only to known-provider hosts -- an ordinary feed's site must not
+# start impersonating a browser for no reason. This only ever requests
+# /favicon.ico and the bare homepage, never an article or anything behind a
+# login, so it can't touch a paywall or auth wall.
+_BROWSER_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 # The homepage is only ever parsed for a <link rel="icon"> tag, never
 # rendered or stored, so it gets its own (larger, but still bounded) cap --
 # reusing the favicon-sized cap would reject perfectly normal homepages
@@ -86,7 +112,10 @@ class _IconLinkParser(html.parser.HTMLParser):
 
 
 async def _bounded_get(
-    client: httpx.AsyncClient, url: str, max_bytes: int
+    client: httpx.AsyncClient,
+    url: str,
+    max_bytes: int,
+    headers: dict[str, str] | None = None,
 ) -> httpx.Response | None:
     """GET `url`, following redirects, reading at most `max_bytes` + 1 bytes.
 
@@ -96,7 +125,7 @@ async def _bounded_get(
     incremental size counter, bounded per-call by FAVICON_TIMEOUT_S.
     """
     async with client.stream(
-        "GET", url, timeout=FAVICON_TIMEOUT_S, follow_redirects=True
+        "GET", url, timeout=FAVICON_TIMEOUT_S, follow_redirects=True, headers=headers
     ) as response:
         if response.status_code != 200:
             return None
@@ -119,8 +148,10 @@ def _data_uri(mime: str, body: bytes) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
-async def _try_fetch_icon(client: httpx.AsyncClient, url: str) -> str | None:
-    response = await _bounded_get(client, url, MAX_FAVICON_BYTES)
+async def _try_fetch_icon(
+    client: httpx.AsyncClient, url: str, headers: dict[str, str] | None = None
+) -> str | None:
+    response = await _bounded_get(client, url, MAX_FAVICON_BYTES, headers=headers)
     if response is None:
         return None
     body: bytes = response._favicon_body  # type: ignore[attr-defined]
@@ -133,11 +164,13 @@ async def _try_fetch_icon(client: httpx.AsyncClient, url: str) -> str | None:
 async def resolve_favicon(client: httpx.AsyncClient, feed_url: str) -> str | None:
     """Best-effort resolution of a feed's site favicon as a data URI.
 
-    Tries `https://<host>/favicon.ico` first, then falls back to parsing
-    `<link rel="icon">` (or "shortcut icon" / "apple-touch-icon") out of the
-    homepage. Returns None on any failure -- bad URL, network error, no
-    icon found, an oversized body, or a 200 response that isn't actually an
-    image (e.g. an HTML error page). Never raises.
+    Tries `https://<host>/favicon.ico` first (the feed's own host, unless
+    it's a known syndication endpoint -- see `_KNOWN_PROVIDER_HOSTS`), then
+    falls back to parsing `<link rel="icon">` (or "shortcut icon" /
+    "apple-touch-icon") out of the homepage. Returns None on any failure --
+    bad URL, network error, no icon found, an oversized body, or a 200
+    response that isn't actually an image (e.g. an HTML error page). Never
+    raises.
     """
     try:
         async with asyncio.timeout(FAVICON_TIMEOUT_S * 2):
@@ -146,13 +179,20 @@ async def resolve_favicon(client: httpx.AsyncClient, feed_url: str) -> str | Non
             if not host or parts.scheme not in ("http", "https"):
                 return None
 
-            favicon_ico_url = f"https://{host}/favicon.ico"
-            direct = await _try_fetch_icon(client, favicon_ico_url)
+            # A feed's own host is sometimes a syndication endpoint rather
+            # than the publisher's real site (_KNOWN_PROVIDER_HOSTS); resolve
+            # against the real domain in that case, with headers that make
+            # the request look like a browser rather than a script.
+            resolve_host = _KNOWN_PROVIDER_HOSTS.get(host, host)
+            headers = _BROWSER_HEADERS if host in _KNOWN_PROVIDER_HOSTS else None
+
+            favicon_ico_url = f"https://{resolve_host}/favicon.ico"
+            direct = await _try_fetch_icon(client, favicon_ico_url, headers=headers)
             if direct is not None:
                 return direct
 
-            homepage_url = f"https://{host}/"
-            homepage = await _bounded_get(client, homepage_url, MAX_HTML_BYTES)
+            homepage_url = f"https://{resolve_host}/"
+            homepage = await _bounded_get(client, homepage_url, MAX_HTML_BYTES, headers=headers)
             if homepage is None:
                 return None
             html_body: bytes = homepage._favicon_body  # type: ignore[attr-defined]
@@ -166,8 +206,11 @@ async def resolve_favicon(client: httpx.AsyncClient, feed_url: str) -> str | Non
             if not parser.href:
                 return None
 
+            # May land on a third host (e.g. a CDN) -- carry the same
+            # headers there too, since that host can gate on them just as
+            # easily as the homepage did.
             icon_url = urljoin(str(homepage.url), parser.href)
-            return await _try_fetch_icon(client, icon_url)
+            return await _try_fetch_icon(client, icon_url, headers=headers)
     except Exception:
         return None
 
