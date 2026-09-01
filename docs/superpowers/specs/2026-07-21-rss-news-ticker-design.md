@@ -2,6 +2,12 @@
 
 **Date:** 2026-07-21
 **Status:** approved (design), pending implementation plan
+**Partially superseded (2026-09-01):** the user model, filter rules, widget
+module, OpenBB integration, and the entire "Amendment: untrusted-network
+authentication" below are superseded by
+`2026-09-01-user-agnostic-rework-design.md` — no users, no keys,
+subscriber-counted feeds. The poller, store, broadcast, and packaging
+sections stand except as amended there.
 
 ## Purpose
 

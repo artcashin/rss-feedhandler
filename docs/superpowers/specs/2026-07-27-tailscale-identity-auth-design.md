@@ -1,6 +1,10 @@
 # Tailscale identity auth, and the ticker on the NAS
 
-**Status:** approved (design), pending implementation
+**Status:** superseded in its entirety (2026-09-01) by
+`2026-09-01-user-agnostic-rework-design.md` — the server no longer
+authenticates anyone by any mechanism, so there is no identity to map.
+Tailnet placement itself (Serve sidecar, never funneled) remains the
+deployment posture; only the identity-header auth described here is gone.
 **Date:** 2026-07-27
 **Amends:** `2026-07-21-rss-news-ticker-design.md` — specifically its
 "Amendment: untrusted-network authentication (2026-07-21)", whose per-user
