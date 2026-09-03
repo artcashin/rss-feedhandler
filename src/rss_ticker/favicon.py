@@ -4,8 +4,9 @@ import asyncio
 import base64
 import html.parser
 import logging
+import re
 from typing import TYPE_CHECKING
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import httpx
 
@@ -172,6 +173,15 @@ async def _try_fetch_icon(
     return _data_uri(mime, body)
 
 
+def _google_news_site(parts) -> str | None:
+    """The `site:<domain>` a news.google.com search feed is scoped to, if any."""
+    if parts.hostname != "news.google.com":
+        return None
+    q = parse_qs(parts.query).get("q", [""])[0]
+    m = re.search(r"site:([A-Za-z0-9.-]+)", q)
+    return m.group(1).lower() if m else None
+
+
 async def resolve_favicon(client: httpx.AsyncClient, feed_url: str) -> str | None:
     """Best-effort resolution of a feed's site favicon as a data URI.
 
@@ -202,6 +212,13 @@ async def resolve_favicon(client: httpx.AsyncClient, feed_url: str) -> str | Non
 
             resolve_host = _KNOWN_PROVIDER_HOSTS.get(host, host)
             headers = _BROWSER_HEADERS if host in _KNOWN_PROVIDER_HOSTS else None
+            # A Google News search feed scoped with site:<domain> carries that
+            # publisher's headlines (Reuters retired its own feeds); its icon
+            # is the publisher's, not Google's, so resolve against the
+            # publisher, browser-like since newsrooms gate on headers.
+            site = _google_news_site(parts)
+            if site is not None:
+                resolve_host, headers = site, _BROWSER_HEADERS
 
             favicon_ico_url = f"https://{resolve_host}/favicon.ico"
             direct = await _try_fetch_icon(client, favicon_ico_url, headers=headers)

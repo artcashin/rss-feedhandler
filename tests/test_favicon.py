@@ -432,3 +432,39 @@ async def test_known_icon_url_failure_falls_back_to_the_usual_dance():
     out = await call(handler, feed_url="https://www.ft.com/markets?format=rss")
     assert out is not None
     assert seen[1] == "https://www.ft.com/favicon.ico"
+
+
+# Reuters retired its public feeds (verified 2026-09-03: reuters.com 401s
+# them); a news.google.com search feed scoped with site:reuters.com is the
+# working substitute, and its icon is Reuters', not Google's.
+
+async def test_google_news_site_feed_resolves_against_the_publisher():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["user_agent"] = request.headers.get("user-agent", "")
+        return httpx.Response(
+            200, content=SMALL_PNG, headers={"Content-Type": "image/png"}
+        )
+
+    out = await call(
+        handler,
+        feed_url="https://news.google.com/rss/search?q=site:reuters.com+when:1d&hl=en-US",
+    )
+    assert out is not None
+    assert seen["url"] == "https://reuters.com/favicon.ico"
+    assert "python-httpx" not in seen["user_agent"].lower()
+
+
+async def test_google_news_feed_without_a_site_resolves_against_google():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(
+            200, content=SMALL_PNG, headers={"Content-Type": "image/png"}
+        )
+
+    await call(handler, feed_url="https://news.google.com/rss/search?q=fed+rates")
+    assert seen["url"] == "https://news.google.com/favicon.ico"
