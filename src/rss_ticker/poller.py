@@ -51,7 +51,9 @@ class Poller:
         self.client.headers["User-Agent"] = self._ua
 
     def _base_interval(self, feed: Feed) -> int:
-        return feed.poll_interval_s or self.config.default_poll_interval_s
+        # One global cadence: per-feed intervals went with the config feeds
+        # (decision F). `feed` is kept in the signature for the call sites.
+        return self.config.default_poll_interval_s
 
     async def poll_feed(self, feed: Feed, now: int) -> list[Article]:
         state = self.store.get_feed_state(feed.id)
@@ -109,9 +111,7 @@ class Poller:
         # loop thread so it can't freeze every concurrent WebSocket
         # send/accept while it churns. parse_feed touches no shared state
         # (no store, no self), so no locking is needed here.
-        entries, dropped = await asyncio.to_thread(
-            parse_feed, outcome.body or b"", now, feed.title_format
-        )
+        entries, dropped = await asyncio.to_thread(parse_feed, outcome.body or b"", now)
         if dropped:
             log.info("Feed %s dropped %d unusable entries", redact_feed_url(feed.url), dropped)
 

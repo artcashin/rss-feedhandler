@@ -42,7 +42,7 @@ def redact_feed_url(url: str) -> str:
     """Reduce a feed URL to scheme and host.
 
     Feed URLs routinely carry credentials -- `?apikey=`, a signed path segment,
-    or `user:token@host`. `.hostname` is used rather than `.netloc` precisely
+    or `user:secret@host`. `.hostname` is used rather than `.netloc` precisely
     because netloc keeps the userinfo. `.port` raises ValueError for a
     non-numeric port (e.g. `host:abc`), so that access is guarded too --
     anything unparseable redacts rather than raising.

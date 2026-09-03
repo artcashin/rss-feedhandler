@@ -23,37 +23,29 @@ FEED_EMPTY = b"""<?xml version="1.0"?><rss version="2.0"><channel></channel></rs
 @pytest.fixture
 def store():
     s = Store(":memory:")
-    s.upsert_user("art", None)
     yield s
     s.close()
 
 
 def make_poller(store, handler, broadcast_sink, max_concurrent=4):
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    cfg = Config(
-        public_base_url="http://x",
-        admin_key="k",
-        default_poll_interval_s=300,
-        max_concurrent_polls=max_concurrent,
-    )
+    cfg = Config(default_poll_interval_s=300, max_concurrent_polls=max_concurrent)
     return Poller(store, client, cfg, on_new_articles=broadcast_sink, jitter=lambda: 1.0)
 
 
 async def test_first_poll_stores_but_broadcasts_nothing(store):
     sent = []
-    fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
+    store.upsert_feed("https://a.example/rss", now=0)
     p = make_poller(store, lambda r: httpx.Response(200, content=FEED_A), sent.extend)
     await p.run_once(now=100)
     assert sent == []
-    rows, _ = store.page_news("art", limit=10)
+    rows, _ = store.page_news(limit=10)
     assert [r.title for r in rows] == ["First"]
 
 
 async def test_second_poll_broadcasts_only_new_articles(store):
     sent = []
-    fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
+    store.upsert_feed("https://a.example/rss", now=0)
     bodies = [FEED_A, FEED_AB]
 
     def handler(request):
@@ -77,7 +69,6 @@ async def test_304_does_not_broadcast_or_fail(store):
     # are untouched from the original.
     sent = []
     fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
     responses = [httpx.Response(200, content=FEED_A), httpx.Response(304)]
     p = make_poller(store, lambda r: responses.pop(0), sent.extend)
     await p.run_once(now=0)
@@ -93,7 +84,6 @@ async def test_304_does_not_broadcast_or_fail(store):
 async def test_304_on_first_poll_is_treated_as_failure(store):
     sent = []
     fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
     p = make_poller(store, lambda r: httpx.Response(304), sent.extend)
     await p.run_once(now=100)
     st = store.get_feed_state(fid)
@@ -108,13 +98,12 @@ async def test_304_on_first_poll_is_treated_as_failure(store):
     p2 = make_poller(store, lambda r: httpx.Response(200, content=FEED_A), sent.extend)
     await p2.run_once(now=500)
     assert sent == []
-    rows, _ = store.page_news("art", limit=10)
+    rows, _ = store.page_news(limit=10)
     assert [r.title for r in rows] == ["First"]
 
 
 async def test_broadcaster_error_does_not_escape_run_once(store):
-    fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
+    store.upsert_feed("https://a.example/rss", now=0)
     bodies = [FEED_A, FEED_AB]
 
     def handler(request):
@@ -133,16 +122,10 @@ async def test_broadcaster_error_does_not_escape_run_once(store):
 
 async def test_no_usable_entries_applies_jitter(store):
     fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(lambda r: httpx.Response(200, content=FEED_EMPTY))
     )
-    cfg = Config(
-        public_base_url="http://x",
-        admin_key="k",
-        default_poll_interval_s=300,
-        max_concurrent_polls=4,
-    )
+    cfg = Config(default_poll_interval_s=300, max_concurrent_polls=4)
     p = Poller(store, client, cfg, on_new_articles=lambda a: None, jitter=lambda: 2.0)
     await p.run_once(now=100)
     st = store.get_feed_state(fid)
@@ -152,7 +135,6 @@ async def test_no_usable_entries_applies_jitter(store):
 
 async def test_failure_records_error_and_backs_off(store):
     fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
     p = make_poller(store, lambda r: httpx.Response(500), lambda a: None)
     await p.run_once(now=100)
     st = store.get_feed_state(fid)
@@ -165,8 +147,6 @@ async def test_one_failing_feed_does_not_block_others(store):
     sent = []
     bad = store.upsert_feed("https://bad.example/rss", now=0)
     good = store.upsert_feed("https://good.example/rss", now=0)
-    store.subscribe("art", bad)
-    store.subscribe("art", good)
 
     def handler(request):
         if "bad" in str(request.url):
@@ -181,26 +161,16 @@ async def test_one_failing_feed_does_not_block_others(store):
 
 
 async def test_only_due_feeds_are_polled(store):
-    fid = store.upsert_feed("https://a.example/rss", now=1000)
-    store.subscribe("art", fid)
+    store.upsert_feed("https://a.example/rss", now=1000)
     p = make_poller(store, lambda r: httpx.Response(200, content=FEED_A), lambda a: None)
     assert await p.run_once(now=100) == 0
 
 
 async def test_disabled_feed_is_not_polled(store):
-    fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
-    store.unsubscribe("art", fid)
+    store.upsert_feed("https://a.example/rss", now=0)
+    store.disable_all_feeds()
     p = make_poller(store, lambda r: httpx.Response(200, content=FEED_A), lambda a: None)
     assert await p.run_once(now=100) == 0
-
-
-async def test_feed_specific_interval_overrides_default(store):
-    fid = store.upsert_feed("https://a.example/rss", poll_interval_s=60, now=0)
-    store.subscribe("art", fid)
-    p = make_poller(store, lambda r: httpx.Response(200, content=FEED_A), lambda a: None)
-    await p.run_once(now=100)
-    assert store.get_feed_state(fid).next_poll_at == 160
 
 
 SECRET = "SUPERSECRET"
@@ -218,8 +188,7 @@ def _poller_messages(caplog) -> list[str]:
 async def test_failure_log_never_contains_a_feed_url_secret(store, caplog):
     # Drives the real poll_feed failure path (poller.py's WARNING call site)
     # rather than asserting on a hand-built string.
-    fid = store.upsert_feed(SECRET_URL, now=0)
-    store.subscribe("art", fid)
+    store.upsert_feed(SECRET_URL, now=0)
     p = make_poller(store, lambda r: httpx.Response(500), lambda a: None)
     with caplog.at_level("WARNING", logger="rss_ticker.poller"):
         await p.run_once(now=100)
@@ -238,14 +207,13 @@ async def test_parse_feed_runs_off_the_event_loop_thread(store, monkeypatch):
     loop_thread_ident = threading.get_ident()
     parse_thread_idents: list[int] = []
 
-    def recording_parse_feed(body: bytes, now: int, title_format=None):
+    def recording_parse_feed(body: bytes, now: int):
         parse_thread_idents.append(threading.get_ident())
-        return parse_feed(body, now, title_format)
+        return parse_feed(body, now)
 
     monkeypatch.setattr(poller_module, "parse_feed", recording_parse_feed)
 
-    fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
+    store.upsert_feed("https://a.example/rss", now=0)
     p = make_poller(store, lambda r: httpx.Response(200, content=FEED_A), lambda a: None)
     await p.run_once(now=100)
 
@@ -276,8 +244,7 @@ async def test_broadcast_age_guard_withholds_a_resurrection(store):
     # cached (still retrievable) but NOT broadcast as if it were breaking
     # news with a stale date.
     sent = []
-    fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
+    store.upsert_feed("https://a.example/rss", now=0)
     # First poll: cold start, but must actually succeed (contain an entry)
     # so record_success runs and last_success_at is set -- an empty feed
     # body hits the "no usable entries" failure path instead and would
@@ -297,7 +264,7 @@ async def test_broadcast_age_guard_withholds_a_resurrection(store):
     await p2.run_once(now=1_700_000_100)
 
     assert sent == [], "a resurrected article with a stale date must not be broadcast"
-    rows, _ = store.page_news("art", limit=10)
+    rows, _ = store.page_news(limit=10)
     assert "Resurrected" in {r.title for r in rows}, (
         "the article must still be cached/retrievable even though withheld from the live push"
     )
@@ -308,8 +275,7 @@ async def test_genuinely_new_dated_article_is_still_broadcast(store):
     # article's published_at is current (>= last_success_at): it must pass
     # the guard and be broadcast normally.
     sent = []
-    fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
+    store.upsert_feed("https://a.example/rss", now=0)
     # See the resurrection test above for why the bootstrap poll must
     # actually succeed (contain an entry) rather than serve an empty body.
     p = make_poller(store, lambda r: httpx.Response(200, content=FEED_A), sent.extend)
@@ -333,8 +299,7 @@ async def test_dateless_article_is_still_broadcast(store):
     # on a non-cold-start poll. This is the documented limitation -- a
     # dateless resurrection would slip through this same path.
     sent = []
-    fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
+    store.upsert_feed("https://a.example/rss", now=0)
     bodies = [FEED_A, FEED_AB]
 
     def handler(request):
@@ -367,7 +332,6 @@ async def test_poll_path_never_touches_favicon_resolution(store, monkeypatch):
     monkeypatch.setattr(poller_module, "resolve_favicon", spy_resolve_favicon, raising=False)
 
     fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
     p = make_poller(store, lambda r: httpx.Response(200, content=FEED_A), lambda a: None)
     await p.run_once(now=100)
 
@@ -377,31 +341,13 @@ async def test_poll_path_never_touches_favicon_resolution(store, monkeypatch):
 
 async def test_cold_start_log_never_contains_a_feed_url_secret(store, caplog):
     # Drives the real poll_feed cold-start path (poller.py's INFO call site).
-    fid = store.upsert_feed(SECRET_URL, now=0)
-    store.subscribe("art", fid)
+    store.upsert_feed(SECRET_URL, now=0)
     p = make_poller(store, lambda r: httpx.Response(200, content=FEED_A), lambda a: None)
     with caplog.at_level("INFO", logger="rss_ticker.poller"):
         await p.run_once(now=100)
     messages = _poller_messages(caplog)
     assert messages
     assert not any(SECRET in m for m in messages)
-
-
-FEED_BYLINE = b"""<?xml version="1.0"?>
-<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>
-<item><title>Scoop</title><guid>urn:s1</guid><dc:creator>Bob Pisani</dc:creator></item>
-</channel></rss>"""
-
-
-async def test_poll_applies_the_feed_title_format(store):
-    fid = store.upsert_feed(
-        "https://s.example/feed", now=0, title_format="{title} - {author}"
-    )
-    store.subscribe("art", fid)
-    p = make_poller(store, lambda r: httpx.Response(200, content=FEED_BYLINE), lambda a: None)
-    await p.run_once(now=100)
-    rows, _ = store.page_news("art", limit=10)
-    assert [r.title for r in rows] == ["Scoop - Bob Pisani"]
 
 
 async def test_article_published_just_before_the_last_poll_is_still_broadcast(store):
@@ -412,8 +358,7 @@ async def test_article_published_just_before_the_last_poll_is_still_broadcast(st
     # eat it -- only resurrections (retention_days old, see the test above)
     # are old enough to withhold.
     sent = []
-    fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
+    store.upsert_feed("https://a.example/rss", now=0)
     p = make_poller(store, lambda r: httpx.Response(200, content=FEED_A), sent.extend)
     await p.run_once(now=1_700_000_000)
     sent.clear()
@@ -440,10 +385,8 @@ async def test_slow_feed_does_not_delay_another_feeds_broadcast(store):
     import asyncio as _asyncio
 
     sent = []
-    fa = store.upsert_feed("https://a.example/rss", now=0)
-    fb = store.upsert_feed("https://b.example/rss", now=0)
-    store.subscribe("art", fa)
-    store.subscribe("art", fb)
+    store.upsert_feed("https://a.example/rss", now=0)
+    store.upsert_feed("https://b.example/rss", now=0)
 
     release_b = _asyncio.Event()
 
@@ -490,13 +433,12 @@ async def test_retry_after_is_not_scaled_by_jitter(store):
     # its jitter; the Retry-After path must not.
     sent = []
     fid = store.upsert_feed("https://a.example/rss", now=0)
-    store.subscribe("art", fid)
     p = Poller(
         store,
         httpx.AsyncClient(transport=httpx.MockTransport(
             lambda r: httpx.Response(429, headers={"Retry-After": "100"})
         )),
-        Config(public_base_url="http://x", admin_key="k"),
+        Config(),
         on_new_articles=sent.extend,
         jitter=lambda: 0.5,
     )

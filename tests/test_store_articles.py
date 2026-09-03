@@ -125,9 +125,7 @@ def test_author_round_trips_and_may_be_null(store):
 
 
 def test_future_dated_article_does_not_sort_ahead_in_paging(store):
-    store.upsert_user("art", None)
     fid = store.upsert_feed("https://x.example/rss", now=0)
-    store.subscribe("art", fid)
     future = 1000 + 10_000_000
     store.insert_articles(
         fid,
@@ -137,7 +135,7 @@ def test_future_dated_article_does_not_sort_ahead_in_paging(store):
         ],
         now=1000,
     )
-    rows, _ = store.page_news("art", limit=10)
+    rows, _ = store.page_news(limit=10)
     # Both were inserted at the same now=1000; with sort_at clamped, the
     # future-dated article cannot jump ahead of the normal one, and it
     # must not be stuck permanently unreachable by an after-cursor either.

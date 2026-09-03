@@ -160,9 +160,7 @@ async def test_svg_favicon_resolves():
 
 
 def _store():
-    s = Store(":memory:")
-    s.upsert_user("art", None)
-    return s
+    return Store(":memory:")
 
 
 def _unused_client() -> httpx.AsyncClient:

@@ -5,8 +5,7 @@ import functools
 import sqlite3
 import threading
 from dataclasses import dataclass
-
-from .filters import FilterRule, include_patterns
+from urllib.parse import urlsplit, urlunsplit
 
 MIN_SQLITE = (3, 35, 0)
 
@@ -35,35 +34,36 @@ def decode_cursor(cursor: str) -> tuple[int, int]:
         raise CursorError("cursor is not valid") from exc
 
 
-def _like_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+def canonical_url(raw: str) -> str:
+    """The pool's identity for a feed: scheme and host lowercased, one
+    trailing slash stripped, nothing cleverer (design decision 2)."""
+    parts = urlsplit(raw.strip())
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc
+    host = parts.hostname or ""
+    if host:
+        # Rebuild netloc with a lowercased host, keeping userinfo and port.
+        # Deliberately minimal: an IPv6 literal keeps its netloc as-is.
+        userinfo, _, hostport = netloc.rpartition("@")
+        port = ""
+        if hostport.count(":") == 1 and not hostport.startswith("["):
+            port = hostport.rpartition(":")[2]
+        rebuilt = host + (f":{port}" if port else "")
+        netloc = f"{userinfo}@{rebuilt}" if userinfo else rebuilt
+    path = parts.path.rstrip("/") if parts.path not in ("", "/") else ""
+    return urlunsplit((scheme, netloc, path, parts.query, parts.fragment))
+
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 
-CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    name TEXT,
-    created_at INTEGER NOT NULL DEFAULT 0,
-    token TEXT
-);
-
 CREATE TABLE IF NOT EXISTS feeds (
     id INTEGER PRIMARY KEY,
     url TEXT NOT NULL UNIQUE,
     name TEXT,
-    poll_interval_s INTEGER,
     enabled INTEGER NOT NULL DEFAULT 1,
-    favicon TEXT,
-    "group" TEXT,
-    title_format TEXT
-);
-
-CREATE TABLE IF NOT EXISTS subscriptions (
-    user_id TEXT NOT NULL REFERENCES users(id),
-    feed_id INTEGER NOT NULL REFERENCES feeds(id),
-    PRIMARY KEY (user_id, feed_id)
+    favicon TEXT
 );
 
 CREATE TABLE IF NOT EXISTS articles (
@@ -92,25 +92,23 @@ CREATE TABLE IF NOT EXISTS feed_state (
     next_poll_at INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS filter_rules (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id),
-    pattern TEXT NOT NULL,
-    action TEXT NOT NULL CHECK (action IN ('include','highlight')),
-    enabled INTEGER NOT NULL DEFAULT 1,
-    UNIQUE (user_id, pattern, action)
-);
-
 CREATE INDEX IF NOT EXISTS idx_articles_sort ON articles (sort_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_subs_user ON subscriptions (user_id);
 """
 
 # Indexes that touch columns added by a migration must be created only after
-# that migration has run, or opening a pre-migration database fails.
+# that migration has run, or opening a pre-migration database fails. The two
+# DROP INDEX lines retire indexes from earlier schemas (the fetched_at
+# retention index, and the user-era subscriptions index whose table is gone).
 POST_MIGRATION_SCHEMA = """
 DROP INDEX IF EXISTS idx_articles_fetched;
+DROP INDEX IF EXISTS idx_subs_user;
 CREATE INDEX IF NOT EXISTS idx_articles_last_seen ON articles (last_seen_at);
 """
+
+
+# The feed columns the current schema declares; the migration drops anything
+# else it finds on the table.
+FEED_COLUMNS = frozenset({"id", "url", "name", "enabled", "favicon"})
 
 
 @dataclass(frozen=True)
@@ -118,11 +116,8 @@ class Feed:
     id: int
     url: str
     name: str | None
-    poll_interval_s: int | None
     enabled: bool
     favicon: str | None = None
-    group: str | None = None
-    title_format: str | None = None
 
 
 @dataclass(frozen=True)
@@ -167,11 +162,8 @@ def _feed(row: sqlite3.Row) -> Feed:
         id=row["id"],
         url=row["url"],
         name=row["name"],
-        poll_interval_s=row["poll_interval_s"],
         enabled=bool(row["enabled"]),
         favicon=row["favicon"],
-        group=row["group"],
-        title_format=row["title_format"],
     )
 
 
@@ -183,9 +175,8 @@ def _synchronized(method):
     or implicit rollback can tear another thread's in-flight transaction.
     Wrapping every public method's *entire* body in the same lock makes
     each method atomic with respect to every other thread, writers and
-    readers alike. RLock (not Lock) because some public methods call
-    other public methods internally (see `unsubscribe` -> `subscribers_of`
-    and `page_news` -> `filters_for`); a plain Lock would self-deadlock.
+    readers alike. RLock (not Lock) so that a public method calling another
+    public method internally cannot self-deadlock.
     """
 
     @functools.wraps(method)
@@ -225,65 +216,52 @@ class Store:
             )
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
-        # SQLite's builtin lower() only folds ASCII (lower('CAFÉ') == 'cafÉ'),
-        # but filters.evaluate() -- used to match the same include/highlight
-        # patterns on the live WebSocket push -- uses Python's Unicode-aware
-        # str.lower(). Overriding lower() here makes page_news's SQL-side
-        # haystack folding agree with the broadcaster's Python-side folding,
-        # so a non-ASCII pattern doesn't match live but vanish on reload.
-        self.db.create_function(
-            "lower", 1, lambda s: s.lower() if s is not None else None, deterministic=True
-        )
         self.db.executescript(SCHEMA)
         self._migrate()
         self.db.executescript(POST_MIGRATION_SCHEMA)
         self.db.commit()
 
     def _migrate(self) -> None:
-        """Bring a database created by an older version up to the current schema."""
-        user_columns = {
-            r["name"] for r in self.db.execute("PRAGMA table_info(users)").fetchall()
-        }
-        if "token" not in user_columns:
-            # Existing deployments have users and no tokens. The column arrives
-            # NULL, and a NULL token authenticates nothing, so those accounts are
-            # closed until boot reconciliation writes the configured value.
-            self.db.execute("ALTER TABLE users ADD COLUMN token TEXT")
+        """Bring a database created by an older version up to the current schema.
 
-        columns = {
-            r["name"] for r in self.db.execute("PRAGMA table_info(articles)").fetchall()
-        }
+        The user era's tables go; the feed row loses the per-user knobs;
+        articles gain a byline; every feed URL is canonicalised. A row whose
+        canonical form collides with another row's is left as it is -- it is
+        unreachable by lookup, so it sits at zero subscribers and the sweep
+        drops it.
+        """
+        self.db.execute("DROP TABLE IF EXISTS filter_rules")
+        self.db.execute("DROP TABLE IF EXISTS subscriptions")
+        self.db.execute("DROP TABLE IF EXISTS users")
+
+        columns = {r["name"] for r in self.db.execute("PRAGMA table_info(articles)").fetchall()}
         if "last_seen_at" not in columns:
             self.db.execute(
                 "ALTER TABLE articles ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0"
             )
         # Rows predating the column (and any left at the default) are treated as
         # last seen when they were fetched, which is what retention used before.
-        self.db.execute(
-            "UPDATE articles SET last_seen_at = fetched_at WHERE last_seen_at = 0"
-        )
+        self.db.execute("UPDATE articles SET last_seen_at = fetched_at WHERE last_seen_at = 0")
         if "author" not in columns:
-            # Existing articles predate the byline. NULL reads as "no author",
-            # which is what the wire sends for an entry without one.
             self.db.execute("ALTER TABLE articles ADD COLUMN author TEXT")
 
-        feed_columns = {
-            r["name"] for r in self.db.execute("PRAGMA table_info(feeds)").fetchall()
-        }
+        feed_columns = {r["name"] for r in self.db.execute("PRAGMA table_info(feeds)").fetchall()}
         if "favicon" not in feed_columns:
-            # Existing feeds predate favicon resolution. The column arrives
-            # NULL, meaning "not resolved yet"; a later poll cycle (Task 2)
-            # fills it in.
             self.db.execute("ALTER TABLE feeds ADD COLUMN favicon TEXT")
-        if "group" not in feed_columns:
-            # Existing feeds predate the group column (Task 2 of feed tabs).
-            # It arrives NULL -- an ungrouped feed only ever appears under the
-            # widget's "All" tab (Task 3), never disappears from the list.
-            self.db.execute('ALTER TABLE feeds ADD COLUMN "group" TEXT')
-        if "title_format" not in feed_columns:
-            # Existing feeds predate per-feed headline templates. NULL means
-            # "store the entry title verbatim", which is what they always did.
-            self.db.execute("ALTER TABLE feeds ADD COLUMN title_format TEXT")
+        # Any feed column the current schema does not declare is a knob from
+        # the config-feeds/user era (decision E). Derived from FEED_COLUMNS
+        # rather than a hardcoded list, so the dead names live in exactly one
+        # place -- the schema itself.
+        for dead in sorted(feed_columns - FEED_COLUMNS):
+            self.db.execute(f'ALTER TABLE feeds DROP COLUMN "{dead}"')
+
+        for row in self.db.execute("SELECT id, url FROM feeds").fetchall():
+            canon = canonical_url(row["url"])
+            if canon == row["url"]:
+                continue
+            taken = self.db.execute("SELECT 1 FROM feeds WHERE url = ?", (canon,)).fetchone()
+            if taken is None:
+                self.db.execute("UPDATE feeds SET url = ? WHERE id = ?", (canon, row["id"]))
         self.db.commit()
 
     @_synchronized
@@ -291,112 +269,18 @@ class Store:
         self.db.close()
 
     @_synchronized
-    def upsert_user(
-        self,
-        user_id: str,
-        name: str | None,
-        now: int = 0,
-        token: str | None = None,
-    ) -> None:
-        self.db.execute(
-            "INSERT INTO users (id, name, created_at, token) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(id) DO UPDATE SET "
-            "  name = COALESCE(excluded.name, users.name), "
-            "  token = COALESCE(excluded.token, users.token)",
-            (user_id, name, now, token),
-        )
-        self.db.commit()
+    def upsert_feed(self, url: str, name: str | None = None, now: int = 0) -> int:
+        """Add `url` to the pool (or find it), returning its feed id.
 
-    @_synchronized
-    def token_for(self, user_id: str) -> str | None:
-        row = self.db.execute(
-            "SELECT token FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
-        return row["token"] if row else None
-
-    @_synchronized
-    def users_without_tokens(self) -> list[str]:
-        rows = self.db.execute(
-            "SELECT id FROM users WHERE token IS NULL OR token = '' ORDER BY id"
-        ).fetchall()
-        return [r["id"] for r in rows]
-
-    @_synchronized
-    def revoke_tokens_except(self, configured_ids: set[str]) -> list[str]:
-        """Clear the token of every user not in `configured_ids`.
-
-        This is how a user removed from config.yaml is closed out: the row,
-        their feeds, subscriptions, and articles are left untouched -- only
-        the credential is withdrawn, setting token to NULL (never '') so it
-        matches the representation `users_without_tokens` and `token_ok`
-        already treat as closed.
-
-        Returns only the ids whose token was actually cleared, i.e. it
-        excludes users who already had no token, so a caller logging the
-        result reports a real transition rather than restating existing
-        orphans every reconcile.
-
-        An empty `configured_ids` revokes nobody. A config with no users at
-        all reads the same as this call getting an empty set, and treating
-        that as "revoke everyone in the database" would turn a misread or
-        truncated config file into a mass lockout -- the opposite of
-        additive reconciliation. Silence is safer here than a global revoke.
+        The COALESCE order is deliberate: the *stored* name wins, so a
+        client's `name` only lands on a feed new to the pool (addendum,
+        reply frame).
         """
-        if not configured_ids:
-            return []
-        placeholders = ",".join("?" * len(configured_ids))
-        ids = tuple(configured_ids)
-        rows = self.db.execute(
-            f"SELECT id FROM users WHERE id NOT IN ({placeholders}) "
-            "AND token IS NOT NULL AND token != '' ORDER BY id",
-            ids,
-        ).fetchall()
-        revoked = [r["id"] for r in rows]
-        if revoked:
-            self.db.execute(
-                f"UPDATE users SET token = NULL WHERE id NOT IN ({placeholders}) "
-                "AND token IS NOT NULL AND token != ''",
-                ids,
-            )
-            self.db.commit()
-        return revoked
-
-    @_synchronized
-    def clear_token(self, user_id: str) -> None:
-        """Set a user's token to NULL, unconditionally.
-
-        Used when config is authoritative that a user should have no token
-        (tailscale_auth with no `token:` line) -- upsert_user's COALESCE
-        would otherwise preserve whatever was stored, keeping a retired
-        token alive after the switch to identity auth.
-        """
-        self.db.execute("UPDATE users SET token = NULL WHERE id = ?", (user_id,))
-        self.db.commit()
-
-    @_synchronized
-    def user_exists(self, user_id: str) -> bool:
-        row = self.db.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone()
-        return row is not None
-
-    @_synchronized
-    def upsert_feed(
-        self,
-        url: str,
-        name: str | None = None,
-        poll_interval_s: int | None = None,
-        now: int = 0,
-        group: str | None = None,
-        title_format: str | None = None,
-    ) -> int:
+        url = canonical_url(url)
         self.db.execute(
-            'INSERT INTO feeds (url, name, poll_interval_s, "group", title_format) '
-            "VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(url) DO UPDATE SET "
-            "  name = COALESCE(excluded.name, feeds.name), "
-            "  poll_interval_s = COALESCE(excluded.poll_interval_s, feeds.poll_interval_s), "
-            '  "group" = COALESCE(excluded."group", feeds."group"), '
-            "  title_format = COALESCE(excluded.title_format, feeds.title_format)",
-            (url, name, poll_interval_s, group, title_format),
+            "INSERT INTO feeds (url, name) VALUES (?, ?) "
+            "ON CONFLICT(url) DO UPDATE SET name = COALESCE(feeds.name, excluded.name)",
+            (url, name),
         )
         feed_id = self.db.execute("SELECT id FROM feeds WHERE url = ?", (url,)).fetchone()["id"]
         self.db.execute(
@@ -406,6 +290,37 @@ class Store:
         )
         self.db.commit()
         return feed_id
+
+    @_synchronized
+    def feed_by_url(self, url: str) -> Feed | None:
+        row = self.db.execute(
+            "SELECT * FROM feeds WHERE url = ?", (canonical_url(url),)
+        ).fetchone()
+        return _feed(row) if row else None
+
+    @_synchronized
+    def set_enabled(self, feed_id: int, enabled: bool) -> None:
+        self.db.execute(
+            "UPDATE feeds SET enabled = ? WHERE id = ?", (1 if enabled else 0, feed_id)
+        )
+        self.db.commit()
+
+    @_synchronized
+    def disable_all_feeds(self) -> None:
+        """Boot state: nobody is connected, so nothing is polled (decision B)."""
+        self.db.execute("UPDATE feeds SET enabled = 0")
+        self.db.commit()
+
+    @_synchronized
+    def drop_disabled_feeds(self) -> int:
+        """Remove every feed at zero subscribers, with its state and articles."""
+        with self.db:
+            ids = [r["id"] for r in self.db.execute("SELECT id FROM feeds WHERE enabled = 0")]
+            for feed_id in ids:
+                self.db.execute("DELETE FROM articles WHERE feed_id = ?", (feed_id,))
+                self.db.execute("DELETE FROM feed_state WHERE feed_id = ?", (feed_id,))
+                self.db.execute("DELETE FROM feeds WHERE id = ?", (feed_id,))
+        return len(ids)
 
     @_synchronized
     def get_feed(self, feed_id: int) -> Feed | None:
@@ -441,44 +356,6 @@ class Store:
             last_error=row["last_error"],
             next_poll_at=row["next_poll_at"],
         )
-
-    @_synchronized
-    def subscribe(self, user_id: str, feed_id: int) -> None:
-        self.db.execute(
-            "INSERT INTO subscriptions (user_id, feed_id) VALUES (?, ?) "
-            "ON CONFLICT DO NOTHING",
-            (user_id, feed_id),
-        )
-        self.db.execute("UPDATE feeds SET enabled = 1 WHERE id = ?", (feed_id,))
-        self.db.commit()
-
-    @_synchronized
-    def unsubscribe(self, user_id: str, feed_id: int) -> bool:
-        cur = self.db.execute(
-            "DELETE FROM subscriptions WHERE user_id = ? AND feed_id = ?", (user_id, feed_id)
-        )
-        removed = cur.rowcount > 0
-        if removed and not self.subscribers_of(feed_id):
-            self.db.execute("UPDATE feeds SET enabled = 0 WHERE id = ?", (feed_id,))
-        self.db.commit()
-        return removed
-
-    @_synchronized
-    def subscribers_of(self, feed_id: int) -> list[str]:
-        rows = self.db.execute(
-            "SELECT user_id FROM subscriptions WHERE feed_id = ? ORDER BY user_id", (feed_id,)
-        ).fetchall()
-        return [r["user_id"] for r in rows]
-
-    @_synchronized
-    def list_feeds(self, user_id: str) -> list[Feed]:
-        rows = self.db.execute(
-            "SELECT f.* FROM feeds f "
-            "JOIN subscriptions s ON s.feed_id = f.id "
-            "WHERE s.user_id = ? ORDER BY f.id",
-            (user_id,),
-        ).fetchall()
-        return [_feed(r) for r in rows]
 
     @_synchronized
     def insert_articles(
@@ -551,31 +428,10 @@ class Store:
         return inserted
 
     @_synchronized
-    def add_filter(self, user_id: str, pattern: str, action: str) -> None:
-        self.db.execute(
-            "INSERT INTO filter_rules (user_id, pattern, action) VALUES (?, ?, ?) "
-            "ON CONFLICT DO NOTHING",
-            (user_id, pattern, action),
-        )
-        self.db.commit()
-
-    @_synchronized
-    def filters_for(self, user_id: str) -> list[FilterRule]:
-        rows = self.db.execute(
-            "SELECT pattern, action FROM filter_rules WHERE user_id = ? AND enabled = 1",
-            (user_id,),
-        ).fetchall()
-        return [FilterRule(pattern=r["pattern"], action=r["action"]) for r in rows]
-
-    @_synchronized
     def page_news(
-        self,
-        user_id: str,
-        limit: int,
-        before: str | None = None,
-        after: str | None = None,
+        self, limit: int, before: str | None = None, after: str | None = None
     ) -> tuple[list[Article], str | None]:
-        """Page a user's news feed.
+        """Page the whole pool.
 
         `before` and the no-cursor default page NEWEST-FIRST, walking backward
         in time (each next_cursor moves further into the past).
@@ -586,46 +442,30 @@ class Store:
         next_cursor is the newest row of the page, so that chaining `after`
         calls advances forward through time without skipping or repeating
         rows. This ordering asymmetry between `before`/default and `after` is
-        intentional but easy to miss.
+        intentional but easy to miss -- see the base design.
         """
-        where = ["s.user_id = ?"]
-        params: list[object] = [user_id]
-
+        where = ["1 = 1"]
+        params: list[object] = []
         if before:
             sort_at, article_id = decode_cursor(before)
-            where.append("(a.sort_at, a.id) < (?, ?)")
+            where.append("(sort_at, id) < (?, ?)")
             params += [sort_at, article_id]
         if after:
             sort_at, article_id = decode_cursor(after)
-            where.append("(a.sort_at, a.id) > (?, ?)")
+            where.append("(sort_at, id) > (?, ?)")
             params += [sort_at, article_id]
-
-        patterns = include_patterns(self.filters_for(user_id))
-        if patterns:
-            clause = " OR ".join(
-                ["lower(a.title || ' ' || COALESCE(a.summary, '')) LIKE ? ESCAPE '\\'"]
-                * len(patterns)
-            )
-            where.append(f"({clause})")
-            params += [f"%{_like_escape(p)}%" for p in patterns]
-
         order = "ASC" if after else "DESC"
         sql = (
-            "SELECT a.* FROM articles a "
-            "JOIN subscriptions s ON s.feed_id = a.feed_id "
-            f"WHERE {' AND '.join(where)} "
-            f"ORDER BY a.sort_at {order}, a.id {order} LIMIT ?"
+            f"SELECT * FROM articles WHERE {' AND '.join(where)} "
+            f"ORDER BY sort_at {order}, id {order} LIMIT ?"
         )
         params.append(limit + 1)
         rows = self.db.execute(sql, params).fetchall()
-
         has_more = len(rows) > limit
         rows = rows[:limit]
         articles = [_article(r) for r in rows]
         next_cursor = (
-            encode_cursor(articles[-1].sort_at, articles[-1].id)
-            if has_more and articles
-            else None
+            encode_cursor(articles[-1].sort_at, articles[-1].id) if has_more and articles else None
         )
         return articles, next_cursor
 
