@@ -2,8 +2,8 @@
 #
 # The tailscale container owns the network namespace; the ticker joins it, so
 # the pair appear on the tailnet as one node named "rss-ticker". NOTHING is
-# published to the LAN -- Tailscale Serve is the only way in, which is exactly
-# what makes the Tailscale-User-Login header trustworthy.
+# published to the LAN -- Tailscale Serve is the only way in, and
+# reachability is the only access control this server has.
 #
 #   https://rss-ticker.your-tailnet.ts.net/   (Serve terminates TLS, real LE cert)
 #
@@ -40,7 +40,7 @@ services:
       - NET_RAW
 
   rss-ticker:
-    image: ghcr.io/artcashin/rss-ticker:8.0.0
+    image: ghcr.io/artcashin/rss-feedhandler:9.0.0
     container_name: rss-ticker
     restart: unless-stopped
     # Share the sidecar netns: the ticker has no network identity of its own,
