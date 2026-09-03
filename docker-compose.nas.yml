@@ -42,7 +42,7 @@ services:
       - NET_RAW
 
   rss-ticker:
-    image: ghcr.io/artcashin/rss-feedhandler:9.0.0
+    image: ghcr.io/artcashin/rss-feedhandler:8.0.0
     container_name: rss-ticker
     restart: unless-stopped
     # Share the sidecar netns: the ticker has no network identity of its own,

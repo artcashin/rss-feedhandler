@@ -20,7 +20,7 @@ Every task's requirements implicitly include this section.
 - **Subscriber counts are in-memory in `Broadcaster`;** `feeds.enabled` mirrors count > 0; every feed starts disabled at boot; the hourly sweep drops feeds still disabled (feed + feed_state + articles).
 - **Config accepts exactly** `retention_days`, `default_poll_interval_s`, `max_concurrent_polls`, `bind_host`; any other top-level key is a `ConfigError` naming it. `${ENV}` expansion stays but nothing requires it.
 - **Broadcast is a plain fan-out** of every inserted article to every open socket; filtering is the client's.
-- **Version 9.0.0**, image `ghcr.io/artcashin/rss-feedhandler`, User-Agent `rss-ticker/<version> (+https://github.com/artcashin/rss-feedhandler)`, uvicorn access log on.
+- **Version 8.0.0**, image `ghcr.io/artcashin/rss-feedhandler`, User-Agent `rss-ticker/<version> (+https://github.com/artcashin/rss-feedhandler)`, uvicorn access log on.
 - **CORS:** `http://localhost:1420`, `http://localhost:4173`, `tauri://localhost`, `http://tauri.localhost`; `allow_credentials=False`.
 - **Scrub gate:** no tailnet names, NAS paths or private hosts in any file (`bash scripts/scrub-check.sh`).
 - **Every task ends green:** `uv run pytest -q` passes, `uv run ruff check src tests` is clean, `bash scripts/scrub-check.sh` passes, and the task is committed. Commit messages end with a blank line then `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
@@ -1997,7 +1997,7 @@ git commit -m "feat!: the user-agnostic pool — no users, no keys, first-frame 
 
 ---
 
-### Task 3: Packaging, config, docs, CI, version 9.0.0
+### Task 3: Packaging, config, docs, CI, version 8.0.0
 
 **Files:**
 - Modify: `pyproject.toml` (version), `src/rss_ticker/__init__.py`, `Makefile` (`IMAGE`, `TAG`), `docker-compose.yml`, `docker-compose.nas.yml`, `config.example.yaml`, `config.yaml` (if tracked — check `git ls-files config.yaml`; if untracked, leave it), `README.md`, `.github/workflows/ci.yml`, `docs/superpowers/specs/2026-07-21-rss-news-ticker-design.md` (header note only)
@@ -2005,7 +2005,7 @@ git commit -m "feat!: the user-agnostic pool — no users, no keys, first-frame 
 
 - [ ] **Step 1: Version and image**
 
-`pyproject.toml`: `version = "9.0.0"`. `src/rss_ticker/__init__.py`: `__version__ = "9.0.0"`. `Makefile`: `IMAGE ?= ghcr.io/artcashin/rss-feedhandler`, `TAG ?= 9.0.0`.
+`pyproject.toml`: `version = "8.0.0"`. `src/rss_ticker/__init__.py`: `__version__ = "8.0.0"`. `Makefile`: `IMAGE ?= ghcr.io/artcashin/rss-feedhandler`, `TAG ?= 8.0.0`.
 
 - [ ] **Step 2: Compose and config**
 
@@ -2054,7 +2054,7 @@ volumes:
   ticker-data:
 ```
 
-`docker-compose.nas.yml`: change the image to `ghcr.io/artcashin/rss-feedhandler:9.0.0`; in the header comment replace the identity-header sentences with: "NOTHING is published to the LAN -- Tailscale Serve is the only way in, and reachability is the only access control this server has." Keep `TS_USERSPACE=false` and its comment (a loopback-reachable app around Serve is still the wrong shape).
+`docker-compose.nas.yml`: change the image to `ghcr.io/artcashin/rss-feedhandler:8.0.0`; in the header comment replace the identity-header sentences with: "NOTHING is published to the LAN -- Tailscale Serve is the only way in, and reachability is the only access control this server has." Keep `TS_USERSPACE=false` and its comment (a loopback-reachable app around Serve is still the wrong shape).
 
 - [ ] **Step 3: CI**
 
@@ -2157,7 +2157,7 @@ tables are dropped, the per-feed `group`, `title_format` and
 `poll_interval_s` columns go, `articles.author` is added, and feed URLs are
 canonicalised. Articles keep their history. The config does **not** migrate:
 delete every key but the four above (the server names the stale ones), drop
-`rss-ticker.env`, and pull `ghcr.io/artcashin/rss-feedhandler:9.0.0`. The
+`rss-ticker.env`, and pull `ghcr.io/artcashin/rss-feedhandler:8.0.0`. The
 OpenBB Workspace widgets are gone; the consumer is bdobb-v2 v8.0.0's News
 widget.
 
@@ -2181,17 +2181,17 @@ Docs: [base design](docs/superpowers/specs/2026-07-21-rss-news-ticker-design.md)
 
 - [ ] **Step 5: Base design header**
 
-In `docs/superpowers/specs/2026-07-21-rss-news-ticker-design.md`, after the "Partially superseded" paragraph add one line: `**Implemented 2026-09-03** by \`docs/superpowers/plans/2026-09-03-user-agnostic-rework.md\` (version 9.0.0).`
+In `docs/superpowers/specs/2026-07-21-rss-news-ticker-design.md`, after the "Partially superseded" paragraph add one line: `**Implemented 2026-09-03** by \`docs/superpowers/plans/2026-09-03-user-agnostic-rework.md\` (version 8.0.0).`
 
 - [ ] **Step 6: Verify and commit**
 
 ```bash
 uv run pytest -q && uv run ruff check src tests && bash scripts/scrub-check.sh
 docker build -t rss-ticker:plan-check . && docker run --rm -e CONFIG_PATH=/cfg/config.example.yaml -v "$PWD:/cfg:ro" rss-ticker:plan-check python -c "from rss_ticker import __version__; print(__version__)"
-git add -A && git commit -m "chore!: 9.0.0 — config, compose, README and CI for the user-agnostic pool"
+git add -A && git commit -m "chore!: 8.0.0 — config, compose, README and CI for the user-agnostic pool"
 ```
 
-Expected: green; the container prints `9.0.0`.
+Expected: green; the container prints `8.0.0`.
 
 ---
 
@@ -2205,7 +2205,7 @@ docker build -t rss-ticker:final .
 grep -rn 'admin_key\|manifest_key\|tailscale_auth\|token\|widgets.json\|title_format' src/ config.example.yaml docker-compose.yml docker-compose.nas.yml; echo "grep exit $?"
 ```
 
-The grep must print nothing (exit 1). It deliberately excludes `tests/` and `README.md`: the migration tests build a v8 schema that names the retired keys, and the README's upgrade note tells operators which keys to delete. Release (outside this plan, after review): `make buildx` pushes `ghcr.io/artcashin/rss-feedhandler:9.0.0` and `:latest`; the NAS pulls it and its `config/config.yaml` shrinks to the four keys.
+The grep must print nothing (exit 1). It deliberately excludes `tests/` and `README.md`: the migration tests build a v8 schema that names the retired keys, and the README's upgrade note tells operators which keys to delete. Release (outside this plan, after review): `make buildx` pushes `ghcr.io/artcashin/rss-feedhandler:8.0.0` and `:latest`; the NAS pulls it and its `config/config.yaml` shrinks to the four keys.
 
 ## Self-review notes
 

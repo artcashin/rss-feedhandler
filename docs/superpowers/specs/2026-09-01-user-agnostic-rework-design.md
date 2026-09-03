@@ -215,7 +215,7 @@ adopts those points and settles what neither said.
 | G | CORS: `http://localhost:1420`, `http://localhost:4173`, `tauri://localhost`, `http://tauri.localhost`; no credentials | The OpenBB origins |
 | H | Config accepts exactly `retention_days`, `default_poll_interval_s`, `max_concurrent_polls`, `bind_host` (default `0.0.0.0`); **any other top-level key is a `ConfigError`** naming it, so a v8 config fails loudly instead of silently ignoring `users:` | Ignoring unknown keys |
 | I | `${ENV}` expansion in the config stays (three lines, harmless); nothing requires an environment variable any more | Removing expansion |
-| J | Version **9.0.0**, image `ghcr.io/artcashin/rss-feedhandler` (the name the live deployment already pulls), User-Agent `rss-ticker/<version> (+https://github.com/artcashin/rss-feedhandler)`; uvicorn access log on | 8.1.0; the old `rss-ticker` image name |
+| J | Version **8.0.0** (the Ep. 8 number moves to the rework, per the tags-move convention; the three-key build it replaces was never a separate episode), image `ghcr.io/artcashin/rss-feedhandler` (the name the live deployment already pulls), User-Agent `rss-ticker/<version> (+https://github.com/artcashin/rss-feedhandler)`; uvicorn access log on | 8.1.0; the old `rss-ticker` image name |
 | K | Removed outright: `widgets.py`, `static/`, `filters.py`, `reconcile.py`, the widget JS harness and its Node CI step, `docker-compose.nas.yml`'s and `docker-compose.yml`'s secrets | Keeping any of it behind a flag |
 
 ### Honest costs, added

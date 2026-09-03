@@ -93,14 +93,14 @@ polls in a row; set `HEALTH_STRICT=1` to make that a 503 so the container's
 `HEALTHCHECK` trips. uvicorn's access log is on; the poller's own log lines
 reduce feed URLs to scheme and host.
 
-## Upgrading from v8
+## Upgrading from the three-key 8.0.0 build
 
 The database migrates itself: the `users`, `subscriptions` and `filter_rules`
 tables are dropped, the per-feed `group`, `title_format` and
 `poll_interval_s` columns go, `articles.author` is added, and feed URLs are
 canonicalised. Articles keep their history. The config does **not** migrate:
 delete every key but the four above (the server names the stale ones), drop
-`rss-ticker.env`, and pull `ghcr.io/artcashin/rss-feedhandler:9.0.0`. The
+`rss-ticker.env`, and pull `ghcr.io/artcashin/rss-feedhandler:8.0.0`. The
 OpenBB Workspace widgets are gone; the consumer is bdobb-v2 v8.0.0's News
 widget.
 

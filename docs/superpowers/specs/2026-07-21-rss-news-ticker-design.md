@@ -9,7 +9,7 @@ authentication" below are superseded by
 subscriber-counted feeds. The poller, store, broadcast, and packaging
 sections stand except as amended there.
 
-**Implemented 2026-09-03** by `docs/superpowers/plans/2026-09-03-user-agnostic-rework.md` (version 9.0.0).
+**Implemented 2026-09-03** by `docs/superpowers/plans/2026-09-03-user-agnostic-rework.md` (version 8.0.0).
 
 ## Purpose
 
