@@ -59,6 +59,14 @@ def test_canonical_url_rules():
     assert canonical_url("https://u:P@X.example:8443/f/") == "https://u:P@x.example:8443/f"
     assert canonical_url("https://x.example/") == "https://x.example"
     assert canonical_url("https://x.example") == "https://x.example"
+    # An IPv6 literal keeps its brackets and its port, or the result is not a
+    # URL any more and every poll of that feed fails forever.
+    assert canonical_url("http://[::1]:8080/feed/") == "http://[::1]:8080/feed"
+    assert canonical_url("HTTP://[2001:DB8::1]/f") == "http://[2001:db8::1]/f"
+    # One trailing slash, not all of them.
+    assert canonical_url("https://x.example/feed//") == "https://x.example/feed/"
+    # An unparseable port leaves nothing safe to rebuild: returned as given.
+    assert canonical_url("https://x.example:abc/f") == "https://x.example:abc/f"
 
 
 def test_enable_disable_and_drop(store):

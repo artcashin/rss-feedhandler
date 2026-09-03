@@ -37,21 +37,28 @@ def decode_cursor(cursor: str) -> tuple[int, int]:
 def canonical_url(raw: str) -> str:
     """The pool's identity for a feed: scheme and host lowercased, one
     trailing slash stripped, nothing cleverer (design decision 2)."""
-    parts = urlsplit(raw.strip())
-    scheme = parts.scheme.lower()
+    raw = raw.strip()
+    parts = urlsplit(raw)
+    try:
+        port = parts.port
+    except ValueError:
+        # A non-numeric port (host:abc) is unparseable, so there is nothing
+        # safe to rebuild from. Store what the caller gave us.
+        return raw
     netloc = parts.netloc
     host = parts.hostname or ""
     if host:
-        # Rebuild netloc with a lowercased host, keeping userinfo and port.
-        # Deliberately minimal: an IPv6 literal keeps its netloc as-is.
-        userinfo, _, hostport = netloc.rpartition("@")
-        port = ""
-        if hostport.count(":") == 1 and not hostport.startswith("["):
-            port = hostport.rpartition(":")[2]
-        rebuilt = host + (f":{port}" if port else "")
-        netloc = f"{userinfo}@{rebuilt}" if userinfo else rebuilt
-    path = parts.path.rstrip("/") if parts.path not in ("", "/") else ""
-    return urlunsplit((scheme, netloc, path, parts.query, parts.fragment))
+        # Rebuild netloc from the parsed host, which urlsplit already
+        # lowercases and unwraps. An IPv6 literal must go back inside its
+        # brackets or the result no longer parses as a URL.
+        if ":" in host:
+            host = f"[{host}]"
+        userinfo = netloc.rpartition("@")[0]
+        netloc = f"{userinfo}@" if userinfo else ""
+        netloc += host + (f":{port}" if port is not None else "")
+    # Exactly one trailing slash, so `/feed//` keeps the second one.
+    path = parts.path[:-1] if parts.path.endswith("/") else parts.path
+    return urlunsplit((parts.scheme.lower(), netloc, path, parts.query, parts.fragment))
 
 
 SCHEMA = """
