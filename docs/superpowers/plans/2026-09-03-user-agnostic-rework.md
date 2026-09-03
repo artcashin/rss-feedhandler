@@ -2202,10 +2202,10 @@ uv run pytest -q
 uv run ruff check src tests
 bash scripts/scrub-check.sh
 docker build -t rss-ticker:final .
-grep -rn 'admin_key\|manifest_key\|tailscale_auth\|token\|widgets.json\|title_format' src/ tests/ README.md config.example.yaml docker-compose.yml; echo "grep exit $?"
+grep -rn 'admin_key\|manifest_key\|tailscale_auth\|token\|widgets.json\|title_format' src/ config.example.yaml docker-compose.yml docker-compose.nas.yml; echo "grep exit $?"
 ```
 
-The grep must print nothing (exit 1). Release (outside this plan, after review): `make buildx` pushes `ghcr.io/artcashin/rss-feedhandler:9.0.0` and `:latest`; the NAS pulls it and its `config/config.yaml` shrinks to the four keys.
+The grep must print nothing (exit 1). It deliberately excludes `tests/` and `README.md`: the migration tests build a v8 schema that names the retired keys, and the README's upgrade note tells operators which keys to delete. Release (outside this plan, after review): `make buildx` pushes `ghcr.io/artcashin/rss-feedhandler:9.0.0` and `:latest`; the NAS pulls it and its `config/config.yaml` shrinks to the four keys.
 
 ## Self-review notes
 

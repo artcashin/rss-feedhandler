@@ -192,7 +192,7 @@ adopts those points and settles what neither said.
   the feed's stored name. Timestamps are epoch seconds.
 - **REST:** `GET /api/news?limit=&before=&after=` (all feeds, `limit` 1–200,
   default 50), `GET /api/feeds` → `{"feeds": [{id, url, title, favicon,
-  subscribers, enabled}]}`, `GET /api/health` → `{status, version, feeds: […]}`
+  subscribers, enabled}]}`, `GET /api/health` → `{status, version, sessions, feeds: […]}`
   with the full per-feed detail (nothing is redacted), `GET /` →
   `{service, version}`.
 - **Canonical URL:** scheme and host lowercased, one trailing slash stripped,

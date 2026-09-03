@@ -14,4 +14,6 @@ max_concurrent_polls: 8
 
 # 0.0.0.0 inside a container whose port is not published; 127.0.0.1 when a
 # proxy on the same host (Tailscale Serve) is the only intended way in.
+# The tradeoff: 0.0.0.0 is reachable by anything that can route to this
+# container's network -- and this server has no authentication.
 bind_host: 0.0.0.0

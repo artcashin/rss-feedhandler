@@ -13,11 +13,17 @@ feeds — the consumer is bdobb-v2's built-in **News** widget.
     cp config.example.yaml config.yaml   # four operational settings
     docker compose up -d
 
-The image binds `127.0.0.1:8088` and publishes nothing else. **Every endpoint
+The default compose publishes `127.0.0.1:8088` and nothing else. **Every endpoint
 is open**: whoever can reach the port can make this server poll a URL, read
-every article and list every feed. Placement is the access control — keep it
-on a private overlay (the NAS compose puts it behind a Tailscale sidecar with
-Serve as the only way in) and never expose it to the public internet.
+every article and list every feed. That includes a read amplification: a
+subscribe frame makes the server GET any http(s) URL it can reach — loopback
+inside its own network namespace, LAN hosts, a cloud metadata address — and
+anything feedparser turns into entries becomes readable by every peer through
+`/api/news`. Placement is the access control — keep it on a private overlay
+and never expose it to the public internet. On the NAS compose (a Tailscale
+sidecar in kernel networking mode) set `bind_host: 127.0.0.1` in
+`config.yaml` so Serve is the only way in; with `0.0.0.0` any tailnet peer
+reaches the port directly.
 
 ## Protocol
 
@@ -34,7 +40,9 @@ Serve as the only way in) and never expose it to the public internet.
 `url` must be http(s) and at most 2048 characters; at most 200 entries. A
 frame that is not that closes the socket with code 4400. `name` is used only
 when the feed is new to the pool. Feeds are deduplicated by canonical URL:
-scheme and host lowercased, one trailing slash stripped, nothing cleverer.
+scheme and host lowercased, one trailing slash stripped (unless a query or
+fragment follows the path), nothing cleverer — the same rule bdobb-v2's
+`canonicalFeedUrl` applies client-side.
 
 **Reply** (server → client, once per subscribe frame, in the frame's order):
 
