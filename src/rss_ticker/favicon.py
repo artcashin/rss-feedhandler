@@ -35,6 +35,17 @@ _KNOWN_PROVIDER_HOSTS: dict[str, str] = {
     "search.cnbc.com": "cnbc.com",
 }
 
+# Hosts whose bot wall 403s /favicon.ico and the homepage alike, whatever
+# the headers (verified 2026-09-03: www.ft.com answers a 270 KB challenge
+# page to everything but the feed), but whose icon lives on a CDN that
+# serves it plainly. Tried before the generic dance.
+_KNOWN_ICON_URLS: dict[str, str] = {
+    "www.ft.com": (
+        "https://images.ft.com/v3/image/raw/ftlogo-v1:brand-ft-logo-square-coloured"
+        "?source=next&format=png&width=32"
+    ),
+}
+
 # Two of the three known-provider domains (wsj.com, cnbc.com) 403 a request
 # that doesn't look like a browser; bloomberg.com doesn't care either way.
 # Applied only to known-provider hosts -- an ordinary feed's site must not
@@ -183,6 +194,12 @@ async def resolve_favicon(client: httpx.AsyncClient, feed_url: str) -> str | Non
             # than the publisher's real site (_KNOWN_PROVIDER_HOSTS); resolve
             # against the real domain in that case, with headers that make
             # the request look like a browser rather than a script.
+            known_icon = _KNOWN_ICON_URLS.get(host)
+            if known_icon is not None:
+                direct = await _try_fetch_icon(client, known_icon)
+                if direct is not None:
+                    return direct
+
             resolve_host = _KNOWN_PROVIDER_HOSTS.get(host, host)
             headers = _BROWSER_HEADERS if host in _KNOWN_PROVIDER_HOSTS else None
 

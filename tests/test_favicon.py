@@ -395,3 +395,40 @@ async def test_cap_accepts_a_real_world_101kb_icon():
     out = await call(handler, feed_url="https://x.example/rss")
     assert out is not None
     _b64_roundtrip(out, body, "image/x-icon")
+
+
+# www.ft.com's bot wall 403s /favicon.ico and the homepage regardless of
+# headers (verified 2026-09-03); its logo is served plainly by images.ft.com.
+
+async def test_known_icon_url_is_fetched_before_favicon_ico():
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(
+            200, content=SMALL_PNG, headers={"Content-Type": "image/png"}
+        )
+
+    out = await call(handler, feed_url="https://www.ft.com/markets?format=rss")
+    assert out is not None
+    _b64_roundtrip(out, SMALL_PNG, "image/png")
+    assert seen == [
+        "https://images.ft.com/v3/image/raw/ftlogo-v1:brand-ft-logo-square-coloured"
+        "?source=next&format=png&width=32"
+    ]
+
+
+async def test_known_icon_url_failure_falls_back_to_the_usual_dance():
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if request.url.host == "images.ft.com":
+            return httpx.Response(503)
+        return httpx.Response(
+            200, content=SMALL_PNG, headers={"Content-Type": "image/png"}
+        )
+
+    out = await call(handler, feed_url="https://www.ft.com/markets?format=rss")
+    assert out is not None
+    assert seen[1] == "https://www.ft.com/favicon.ico"
