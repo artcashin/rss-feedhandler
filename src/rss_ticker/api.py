@@ -109,11 +109,14 @@ def create_app(
         limit: int = Query(50, ge=1, le=200),
         before: str | None = Query(None),
         after: str | None = Query(None),
+        feed_id: int | None = Query(None, ge=1),
     ) -> dict:
         if before and after:
             raise HTTPException(status_code=400, detail="Pass before or after, not both")
         try:
-            articles, next_cursor = store.page_news(limit=limit, before=before, after=after)
+            articles, next_cursor = store.page_news(
+                limit=limit, before=before, after=after, feed_id=feed_id
+            )
         except CursorError:
             raise HTTPException(status_code=400, detail="Cursor is not valid") from None
         names: dict[int, str | None] = {}

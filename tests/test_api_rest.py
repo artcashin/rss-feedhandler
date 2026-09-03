@@ -151,3 +151,17 @@ def test_cors_admits_the_tauri_origin_without_credentials(client):
         headers={"Origin": "https://pro.openbb.co", "Access-Control-Request-Method": "GET"},
     )
     assert "access-control-allow-origin" not in r.headers
+
+
+def test_news_filters_to_one_feed_so_a_quiet_feed_is_never_crowded_out(client, store):
+    seed(store, 150, url="https://wire.example/rss", name="Wire")
+    quiet = store.upsert_feed("https://quiet.example/feed", name="Quiet", now=0)
+    store.insert_articles(quiet, [NewArticle("q", "Weekly note", "https://l", None, 5)], now=2000)
+    # Pool-wide, the wire's 150 newer rows bury the quiet feed.
+    pool = client.get("/api/news", params={"limit": 100}).json()["articles"]
+    assert all(a["feed_id"] != quiet for a in pool)
+    # Per feed, it is right there.
+    body = client.get("/api/news", params={"feed_id": quiet, "limit": 50}).json()
+    assert [a["title"] for a in body["articles"]] == ["Weekly note"]
+    assert body["next_cursor"] is None
+    assert client.get("/api/news", params={"feed_id": 0}).status_code == 422

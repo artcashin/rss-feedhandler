@@ -454,9 +454,17 @@ class Store:
 
     @_synchronized
     def page_news(
-        self, limit: int, before: str | None = None, after: str | None = None
+        self,
+        limit: int,
+        before: str | None = None,
+        after: str | None = None,
+        feed_id: int | None = None,
     ) -> tuple[list[Article], str | None]:
-        """Page the whole pool.
+        """Page the whole pool, or one feed of it when `feed_id` is given.
+
+        The per-feed form exists for the client's seed: a pool-wide "newest
+        N" is dominated by the wires, and a newsletter that posts weekly would
+        never make the page at all.
 
         `before` and the no-cursor default page NEWEST-FIRST, walking backward
         in time (each next_cursor moves further into the past).
@@ -471,6 +479,9 @@ class Store:
         """
         where = ["1 = 1"]
         params: list[object] = []
+        if feed_id is not None:
+            where.append("feed_id = ?")
+            params.append(feed_id)
         if before:
             sort_at, article_id = decode_cursor(before)
             where.append("(sort_at, id) < (?, ?)")
