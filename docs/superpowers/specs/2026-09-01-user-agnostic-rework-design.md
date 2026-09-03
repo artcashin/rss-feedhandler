@@ -156,3 +156,74 @@ Superseded criteria 7–13 (the auth matrix) are removed. Added:
    articles intact (scrollback still works).
 4. An article frame carries `feed_id`, and `GET /api/news` serves all
    feeds with no `user` param accepted or required.
+
+---
+
+## Addendum (2026-09-03): the contract as the client fixed it, and implementation decisions
+
+**Status:** approved in chat 2026-09-03; implemented by
+`docs/superpowers/plans/2026-09-03-user-agnostic-rework.md`.
+**Pairs with:** bdobb-v2 v8.0.0, whose News widget was built first against
+the contract in its `docs/superpowers/specs/2026-09-03-v8.0.0-news-widget-design.md`.
+Where this design was silent, that document fixed the wire; this addendum
+adopts those points and settles what neither said.
+
+### Wire contract, exactly
+
+- **Subscribe frame** (client → server, first frame, and any later frame):
+  `{"subscribe": [{"url": "https://…", "name": "optional"}, …]}`. Each `url`
+  must be `http`/`https` and at most 2048 characters; at most 200 entries.
+  A frame that is not valid JSON, not an object with a `subscribe` list, or
+  that violates those limits closes the socket with code **4400** and a
+  reason; the client's ordinary reconnect cycle applies. A later `subscribe`
+  frame replaces the session's set (counts adjust by the difference).
+- **Reply frame** (server → client, once per subscribe frame):
+  `{"feeds": [{"id": int, "url": str, "title": str|null, "favicon": str|null}]}`
+  — one record per distinct canonical URL in the frame, in the frame's order.
+  `url` is the canonical form the server stored; `title` is the feed's stored
+  name (the client's `name` when the feed was new to the pool, else whatever
+  it already had); `favicon` is a `data:image/…;base64,` URI or null. A frame
+  carrying a `feeds` key is always the reply; every other server frame is an
+  article.
+- **Article frame / REST row:**
+  `{id, feed_id, cursor, title, link, summary, source, author, published_at, sort_at}`.
+  `author` is new (feedparser's `author`, `dc:creator` folded; null when the
+  entry has none). `highlighted` is gone with the filter rules. `source` is
+  the feed's stored name. Timestamps are epoch seconds.
+- **REST:** `GET /api/news?limit=&before=&after=` (all feeds, `limit` 1–200,
+  default 50), `GET /api/feeds` → `{"feeds": [{id, url, title, favicon,
+  subscribers, enabled}]}`, `GET /api/health` → `{status, version, feeds: […]}`
+  with the full per-feed detail (nothing is redacted), `GET /` →
+  `{service, version}`.
+- **Canonical URL:** scheme and host lowercased, one trailing slash stripped,
+  nothing else. `feeds.url` stores the canonical form; a subscribe URL is
+  canonicalised before lookup, so `HTTPS://Host/feed/` and `https://host/feed`
+  are one feed. Existing rows are canonicalised on migration; a row whose
+  canonical form collides with another's is left as-is and, being
+  unreachable by lookup, is dropped by the sweep once at zero subscribers.
+
+### Implementation decisions
+
+| # | Decision | Rejected |
+|---|---|---|
+| A | Subscriber counts live in the `Broadcaster`, in memory, keyed by feed id; the store's `enabled` flag mirrors "count > 0" so the poller's `due_feeds` query is unchanged | A subscriptions table |
+| B | **Every feed starts disabled at boot** (`disable_all_feeds`); the first subscribe re-enables it. Nothing is polled while nobody is connected, from the first second | Trusting `enabled` as persisted |
+| C | The hourly sweep also **drops feeds still at zero subscribers** (feed, `feed_state`, and its articles), after the article retention delete | Immediate deletion at zero |
+| D | A feed **new to the pool** gets its favicon resolved in a background task at subscribe time (the shared `httpx` client), so a reconnect within seconds sees it; the startup refresh pass stays | Waiting for the next restart |
+| E | `users`, `subscriptions` and `filter_rules` tables are dropped by migration; `feeds.group` and `feeds.title_format` columns are dropped too (SQLite ≥ 3.35, which the store already requires); `articles.author TEXT` is added | Leaving dead columns |
+| F | Per-feed `poll_interval_s` is gone with the config feeds: every feed polls at `default_poll_interval_s`. The operator sets that value for the deployment (90 s for a wire-heavy pool) | A `poll_interval_s` on the subscribe entry (not in the client's contract; can be added later) |
+| G | CORS: `http://localhost:1420`, `http://localhost:4173`, `tauri://localhost`, `http://tauri.localhost`; no credentials | The OpenBB origins |
+| H | Config accepts exactly `retention_days`, `default_poll_interval_s`, `max_concurrent_polls`, `bind_host` (default `0.0.0.0`); **any other top-level key is a `ConfigError`** naming it, so a v8 config fails loudly instead of silently ignoring `users:` | Ignoring unknown keys |
+| I | `${ENV}` expansion in the config stays (three lines, harmless); nothing requires an environment variable any more | Removing expansion |
+| J | Version **9.0.0**, image `ghcr.io/artcashin/rss-feedhandler` (the name the live deployment already pulls), User-Agent `rss-ticker/<version> (+https://github.com/artcashin/rss-feedhandler)`; uvicorn access log on | 8.1.0; the old `rss-ticker` image name |
+| K | Removed outright: `widgets.py`, `static/`, `filters.py`, `reconcile.py`, the widget JS harness and its Node CI step, `docker-compose.nas.yml`'s and `docker-compose.yml`'s secrets | Keeping any of it behind a flag |
+
+### Honest costs, added
+
+- **A subscribe frame is an unauthenticated instruction to poll a URL.** The
+  scheme check and the size limits bound the damage, not the intent.
+  Placement (tailnet-only) remains the whole protection.
+- **Poll cadence is global.** A pool mixing a 30-second wire and a weekly
+  blog polls both at the same interval.
+- **A restart drops nothing but polls nothing** until a client reconnects;
+  the client reconnects every 3 s, so in practice the gap is seconds.
