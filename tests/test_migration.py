@@ -46,6 +46,10 @@ def tables(path: str) -> set[str]:
     }
 
 
+def user_version(path: str) -> int:
+    return sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0]
+
+
 def columns(path: str, table: str) -> set[str]:
     return {r[1] for r in sqlite3.connect(path).execute(f"PRAGMA table_info({table})")}
 
@@ -73,3 +77,41 @@ def test_migration_is_idempotent(tmp_path: Path):
     Store(db).close()
     Store(db).close()
     assert columns(db, "feeds") == {"id", "url", "name", "enabled", "favicon"}
+
+
+def test_canonicalisation_runs_once_and_never_re_strips(tmp_path: Path):
+    """One-slash stripping is not a fixed point: `/f//` -> `/f/` -> `/f`.
+
+    Re-running it on every open would walk the URL down a slash at a time,
+    and each step splits the feed row -- a new id, no articles. The
+    `user_version` gate is what stops it.
+    """
+    db = str(tmp_path / "t.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE feeds (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, name TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1, favicon TEXT);
+        CREATE TABLE articles (id INTEGER PRIMARY KEY, feed_id INTEGER NOT NULL, guid TEXT NOT NULL,
+            title TEXT NOT NULL, link TEXT, summary TEXT, published_at INTEGER, fetched_at INTEGER NOT NULL,
+            sort_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL DEFAULT 0, UNIQUE (feed_id, guid));
+        CREATE TABLE feed_state (feed_id INTEGER PRIMARY KEY, etag TEXT, last_modified TEXT,
+            last_polled_at INTEGER, last_success_at INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT, next_poll_at INTEGER NOT NULL DEFAULT 0);
+        INSERT INTO feeds (id, url, name) VALUES (1, 'https://a.example/f//', 'A');
+        INSERT INTO articles (feed_id, guid, title, fetched_at, sort_at, last_seen_at)
+            VALUES (1, 'g', 'Kept', 100, 100, 100);
+        INSERT INTO feed_state (feed_id, next_poll_at) VALUES (1, 0);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    for open_number in range(3):
+        store = Store(db)
+        try:
+            assert [(f.id, f.url) for f in store.all_feeds()] == [(1, "https://a.example/f/")]
+            assert [a.title for a in store.page_news(limit=10)[0]] == ["Kept"]
+            assert user_version(db) == 1, f"open {open_number + 1}"
+        finally:
+            store.close()

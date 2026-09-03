@@ -58,8 +58,14 @@ def parse_subscribe(frame: object) -> list[tuple[str, str | None]] | None:
         url = entry["url"].strip()
         if not url or len(url) > MAX_URL_LEN:
             return None
-        parts = urlsplit(url)
-        if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+        try:
+            parts = urlsplit(url)
+            scheme, host = parts.scheme.lower(), parts.hostname
+        except ValueError:
+            # An unparseable authority (`http://[oops`) raises rather than
+            # returning parts; that is a malformed frame, not a server error.
+            return None
+        if scheme not in ("http", "https") or not host:
             return None
         name = entry.get("name")
         if name is not None and not isinstance(name, str):
@@ -159,7 +165,11 @@ def create_app(
                 continue
             ids.add(feed_id)
             feed = store.get_feed(feed_id)
-            assert feed is not None
+            if feed is None:
+                # The sweep can drop a disabled feed between the upsert and
+                # this read. Nothing to report for it; the next frame will
+                # add it back.
+                continue
             records.append(feed_record(feed))
             if existing is None and on_feed_added is not None:
                 on_feed_added(feed)
@@ -189,7 +199,11 @@ def create_app(
                     if isinstance(text, str):
                         try:
                             frame = json.loads(text)
-                        except ValueError:
+                        except (ValueError, RecursionError):
+                            # Deeply nested JSON (`[` x 200000) blows the
+                            # recursion limit inside the decoder; that is a
+                            # malformed frame, so it closes 4400 like any
+                            # other rather than falling out as a 1006.
                             frame = None
                     entries = parse_subscribe(frame)
                     if entries is None:

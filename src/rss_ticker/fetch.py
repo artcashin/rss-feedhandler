@@ -47,10 +47,11 @@ def redact_feed_url(url: str) -> str:
     non-numeric port (e.g. `host:abc`), so that access is guarded too --
     anything unparseable redacts rather than raising.
 
-    Lives here rather than in api.py or poller.py: both need it (api.py to
-    redact `/api/feeds` for non-admin callers, poller.py to keep feed.url out
-    of every poll log line), and fetch.py is the lowest-level module that
-    already speaks in feed URLs, with no dependency on either caller.
+    Lives here because the poller's log lines need it -- feed.url must stay
+    out of every poll line -- and fetch.py is the lowest-level module that
+    already speaks in feed URLs, with no dependency on its caller. Nothing in
+    the API redacts any more: `/api/feeds` returns feed URLs verbatim to
+    whoever can reach the port.
     """
     parts = urlsplit(url)
     host = parts.hostname or ""

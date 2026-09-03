@@ -7,28 +7,14 @@ import feedparser
 
 from .store import NewArticle
 
-# feedparser folds well-known namespaced tags into its own field names, so a
-# template naming the tag as it appears in the raw XML needs a bridge.
-_TAG_ALIASES = {
-    "dc:creator": "author",
-    "creator": "author",
-    "description": "summary",
-}
-
-
 def _entry_field(entry, name: str) -> str | None:
-    """A non-empty string field of the entry, or None.
+    """A non-empty, stripped string field of the entry, or None.
 
-    Tried as written, then through the raw-XML-tag aliases, then with the
-    namespace colon folded to feedparser's underscore convention.
+    No alias table: feedparser already folds the namespaced tags (`dc:creator`
+    among them) onto its own field names before we look.
     """
-    for key in (name, _TAG_ALIASES.get(name), name.replace(":", "_")):
-        if not key:
-            continue
-        value = entry.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
+    value = entry.get(name)
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def _published(entry) -> int | None:

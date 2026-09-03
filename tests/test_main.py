@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from rss_ticker import main as main_mod
 from rss_ticker.main import build
+from rss_ticker.store import NewArticle
 
 CONFIG = """
 retention_days: 2
@@ -86,3 +87,37 @@ def test_database_persists_across_builds(tmp_path):
             ws.receive_json()
     rows = sqlite3.connect(db).execute("SELECT url, name FROM feeds").fetchall()
     assert rows == [("https://a.example/rss", "A")]
+
+
+def test_a_disabled_feed_is_reused_with_its_history(tmp_path):
+    """Spec testing-delta 3: nobody subscribed means disabled, not forgotten.
+
+    No sweep has run (the sweeper's first pass is an hour out), so the row is
+    still there when the next client asks for the same URL -- same id, same
+    articles, enabled again.
+    """
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(CONFIG)
+    db = str(tmp_path / "t.db")
+    url = "https://a.example/rss"
+
+    first = build(cfg, db, env={})
+    with TestClient(first) as client:
+        with client.websocket_connect("/ws/news") as ws:
+            ws.send_json({"subscribe": [{"url": url, "name": "A"}]})
+            fid = ws.receive_json()["feeds"][0]["id"]
+        first.state.store.insert_articles(
+            fid, [NewArticle("g", "Kept", "https://l", None, 1000)], now=1000
+        )
+        # The socket is gone, so the feed sits at zero subscribers, disabled.
+        feeds = client.get("/api/feeds").json()["feeds"]
+        assert [(f["id"], f["enabled"], f["subscribers"]) for f in feeds] == [(fid, False, 0)]
+
+    with TestClient(build(cfg, db, env={})) as client:
+        with client.websocket_connect("/ws/news") as ws:
+            ws.send_json({"subscribe": [{"url": url}]})
+            reply = ws.receive_json()["feeds"]
+            assert [(r["id"], r["title"]) for r in reply] == [(fid, "A")]
+            feeds = client.get("/api/feeds").json()["feeds"]
+            assert [(f["id"], f["enabled"], f["subscribers"]) for f in feeds] == [(fid, True, 1)]
+            assert [a["title"] for a in client.get("/api/news").json()["articles"]] == ["Kept"]

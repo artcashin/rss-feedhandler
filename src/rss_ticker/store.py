@@ -56,8 +56,16 @@ def canonical_url(raw: str) -> str:
         userinfo = netloc.rpartition("@")[0]
         netloc = f"{userinfo}@" if userinfo else ""
         netloc += host + (f":{port}" if port is not None else "")
-    # Exactly one trailing slash, so `/feed//` keeps the second one.
-    path = parts.path[:-1] if parts.path.endswith("/") else parts.path
+    # Exactly one trailing slash, so `/feed//` keeps the second one. The
+    # client (bdobb-v2 canonicalFeedUrl) strips one trailing slash from the
+    # *serialized* URL, so a query or fragment shields the path's slash: for
+    # `…/feed/?x=1` the last character is not a slash and nothing is stripped.
+    # Strip only when the path is genuinely last, or the two disagree.
+    path = (
+        parts.path[:-1]
+        if parts.path.endswith("/") and not parts.query and not parts.fragment
+        else parts.path
+    )
     return urlunsplit((parts.scheme.lower(), netloc, path, parts.query, parts.fragment))
 
 
@@ -236,10 +244,18 @@ class Store:
         canonical form collides with another row's is left as it is -- it is
         unreachable by lookup, so it sits at zero subscribers and the sweep
         drops it.
+
+        The one-shot half runs behind `PRAGMA user_version`, because
+        canonicalisation is not a fixed point: one-slash stripping takes
+        `…/f//` to `…/f/` and then, on a second open, to `…/f` -- which
+        splits the feed row and loses its history. The column-existence
+        checks are idempotent and stay outside the gate.
         """
-        self.db.execute("DROP TABLE IF EXISTS filter_rules")
-        self.db.execute("DROP TABLE IF EXISTS subscriptions")
-        self.db.execute("DROP TABLE IF EXISTS users")
+        once = self.db.execute("PRAGMA user_version").fetchone()[0] < 1
+        if once:
+            self.db.execute("DROP TABLE IF EXISTS filter_rules")
+            self.db.execute("DROP TABLE IF EXISTS subscriptions")
+            self.db.execute("DROP TABLE IF EXISTS users")
 
         columns = {r["name"] for r in self.db.execute("PRAGMA table_info(articles)").fetchall()}
         if "last_seen_at" not in columns:
@@ -255,20 +271,22 @@ class Store:
         feed_columns = {r["name"] for r in self.db.execute("PRAGMA table_info(feeds)").fetchall()}
         if "favicon" not in feed_columns:
             self.db.execute("ALTER TABLE feeds ADD COLUMN favicon TEXT")
-        # Any feed column the current schema does not declare is a knob from
-        # the config-feeds/user era (decision E). Derived from FEED_COLUMNS
-        # rather than a hardcoded list, so the dead names live in exactly one
-        # place -- the schema itself.
-        for dead in sorted(feed_columns - FEED_COLUMNS):
-            self.db.execute(f'ALTER TABLE feeds DROP COLUMN "{dead}"')
+        if once:
+            # Any feed column the current schema does not declare is a knob
+            # from the config-feeds/user era (decision E). Derived from
+            # FEED_COLUMNS rather than a hardcoded list, so the dead names
+            # live in exactly one place -- the schema itself.
+            for dead in sorted(feed_columns - FEED_COLUMNS):
+                self.db.execute(f'ALTER TABLE feeds DROP COLUMN "{dead}"')
 
-        for row in self.db.execute("SELECT id, url FROM feeds").fetchall():
-            canon = canonical_url(row["url"])
-            if canon == row["url"]:
-                continue
-            taken = self.db.execute("SELECT 1 FROM feeds WHERE url = ?", (canon,)).fetchone()
-            if taken is None:
-                self.db.execute("UPDATE feeds SET url = ? WHERE id = ?", (canon, row["id"]))
+            for row in self.db.execute("SELECT id, url FROM feeds").fetchall():
+                canon = canonical_url(row["url"])
+                if canon == row["url"]:
+                    continue
+                taken = self.db.execute("SELECT 1 FROM feeds WHERE url = ?", (canon,)).fetchone()
+                if taken is None:
+                    self.db.execute("UPDATE feeds SET url = ? WHERE id = ?", (canon, row["id"]))
+            self.db.execute("PRAGMA user_version = 1")
         self.db.commit()
 
     @_synchronized

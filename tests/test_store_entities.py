@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit, urlunsplit
+
 import pytest
 from rss_ticker.store import NewArticle, Store
 
@@ -67,6 +69,62 @@ def test_canonical_url_rules():
     assert canonical_url("https://x.example/feed//") == "https://x.example/feed/"
     # An unparseable port leaves nothing safe to rebuild: returned as given.
     assert canonical_url("https://x.example:abc/f") == "https://x.example:abc/f"
+    # A query or a fragment shields the path's trailing slash, because the
+    # client strips one slash off the serialized URL, where the slash is no
+    # longer last. Stripping here would split the feed row.
+    assert canonical_url("https://x.example/feed/?x=1") == "https://x.example/feed/?x=1"
+    assert canonical_url("https://x.example/feed/#frag") == "https://x.example/feed/#frag"
+
+
+def client_canonical_feed_url(raw: str) -> str:
+    """bdobb-v2's `canonicalFeedUrl`, reproduced in Python.
+
+    The client is `new URL(x).toString().replace(/\\/$/, "")`: URL lowercases
+    scheme and host and always serializes a non-empty path, then exactly one
+    trailing slash comes off the *whole string* -- so a query or fragment
+    leaves the path's slash alone. Expected values below were taken from
+    node's real URL implementation, so this mirror is checked too, not just
+    the server.
+    """
+    parts = urlsplit(raw.strip())
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    userinfo = parts.netloc.rpartition("@")[0]
+    netloc = (f"{userinfo}@" if userinfo else "") + host
+    if parts.port is not None:
+        netloc += f":{parts.port}"
+    serialized = urlunsplit(
+        (parts.scheme.lower(), netloc, parts.path or "/", parts.query, parts.fragment)
+    )
+    return serialized[:-1] if serialized.endswith("/") else serialized
+
+
+# What the browser's URL actually produces, measured with node 2026-09-03.
+CLIENT_CANONICAL = {
+    "https://host/feed/": "https://host/feed",
+    "https://host/feed": "https://host/feed",
+    "https://host/feed//": "https://host/feed/",
+    "https://host/feed/?x=1": "https://host/feed/?x=1",
+    "https://host/feed/#frag": "https://host/feed/#frag",
+    "HTTPS://Host/Feed/": "https://host/Feed",
+    "https://host/": "https://host",
+    "https://host": "https://host",
+    "https://u:P@Host:8443/f/": "https://u:P@host:8443/f",
+    "http://[::1]:8080/feed/": "http://[::1]:8080/feed",
+    "https://host/Feed?A=1": "https://host/Feed?A=1",
+    "https://host/a/b/": "https://host/a/b",
+}
+
+
+@pytest.mark.parametrize(("raw", "expected"), sorted(CLIENT_CANONICAL.items()))
+def test_canonical_url_agrees_with_the_client(raw, expected):
+    """One identity, two implementations. A disagreement means the same feed
+    is two rows in the pool, so both sides are pinned to the same table."""
+    from rss_ticker.store import canonical_url
+
+    assert client_canonical_feed_url(raw) == expected
+    assert canonical_url(raw) == expected
 
 
 def test_enable_disable_and_drop(store):

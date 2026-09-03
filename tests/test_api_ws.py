@@ -81,6 +81,11 @@ def test_a_later_subscribe_replaces_the_set(client, store, broadcaster):
         {"subscribe": [{"url": A, "name": 3}]},
         {"subscribe": [{"url": "x" * 3000}]},
         {"subscribe": [{"url": f"https://h{i}.example/f"} for i in range(MAX_SUBSCRIBE_URLS + 1)]},
+        # urlsplit raises ValueError on an unclosed IPv6 literal ...
+        {"subscribe": [{"url": "http://[oops"}]},
+        # ... and json.loads raises RecursionError on deep nesting. Both used
+        # to escape through the handler's except clause as a bare 1006.
+        pytest.param("[" * 200000, id="deep-json"),
     ],
 )
 def test_an_invalid_subscribe_frame_closes_4400_and_registers_nothing(
