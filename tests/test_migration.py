@@ -80,6 +80,9 @@ def test_boot_writes_the_configured_token_onto_an_existing_user(tmp_path: Path):
     cfg.write_text(NEW_CONFIG)
 
     app = build(cfg, db_path, env={})
+    assert "author" in {
+        r[1] for r in sqlite3.connect(db_path).execute("PRAGMA table_info(articles)")
+    }
     with TestClient(app) as client:
         assert client.get(
             "/api/news", params={"user": "art", "token": TOKEN}

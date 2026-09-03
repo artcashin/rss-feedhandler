@@ -32,6 +32,7 @@ def article_payload(article: Article, feed_name: str | None, highlighted: bool) 
         "link": article.link,
         "summary": article.summary,
         "source": feed_name,
+        "author": article.author,
         "published_at": article.published_at,
         "sort_at": article.sort_at,
         "highlighted": highlighted,

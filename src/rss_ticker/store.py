@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS articles (
     title TEXT NOT NULL,
     link TEXT,
     summary TEXT,
+    author TEXT,
     published_at INTEGER,
     fetched_at INTEGER NOT NULL,
     sort_at INTEGER NOT NULL,
@@ -144,6 +145,7 @@ class Article:
     title: str
     link: str | None
     summary: str | None
+    author: str | None
     published_at: int | None
     fetched_at: int
     sort_at: int
@@ -157,6 +159,7 @@ class NewArticle:
     link: str | None
     summary: str | None
     published_at: int | None
+    author: str | None = None
 
 
 def _feed(row: sqlite3.Row) -> Feed:
@@ -201,6 +204,7 @@ def _article(row: sqlite3.Row) -> Article:
         title=row["title"],
         link=row["link"],
         summary=row["summary"],
+        author=row["author"],
         published_at=row["published_at"],
         fetched_at=row["fetched_at"],
         sort_at=row["sort_at"],
@@ -258,6 +262,10 @@ class Store:
         self.db.execute(
             "UPDATE articles SET last_seen_at = fetched_at WHERE last_seen_at = 0"
         )
+        if "author" not in columns:
+            # Existing articles predate the byline. NULL reads as "no author",
+            # which is what the wire sends for an entry without one.
+            self.db.execute("ALTER TABLE articles ADD COLUMN author TEXT")
 
         feed_columns = {
             r["name"] for r in self.db.execute("PRAGMA table_info(feeds)").fetchall()
@@ -491,6 +499,7 @@ class Store:
                     e.title,
                     e.link,
                     e.summary,
+                    e.author,
                     e.published_at,
                     now,
                     # sort_at is the widget's ordering/cursor key (see
@@ -513,9 +522,9 @@ class Store:
                 # article "new" and therefore broadcastable.
                 cur = self.db.execute(
                     "INSERT INTO articles "
-                    "(feed_id, guid, title, link, summary, published_at, fetched_at, "
+                    "(feed_id, guid, title, link, summary, author, published_at, fetched_at, "
                     " sort_at, last_seen_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT (feed_id, guid) DO NOTHING "
                     "RETURNING *",
                     row,

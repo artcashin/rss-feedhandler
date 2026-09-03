@@ -47,7 +47,7 @@ class Poller:
         self.config = config
         self.on_new_articles = on_new_articles
         self.jitter = jitter
-        self._ua = user_agent(__version__, config.public_base_url)
+        self._ua = user_agent(__version__)
         self.client.headers["User-Agent"] = self._ua
 
     def _base_interval(self, feed: Feed) -> int:

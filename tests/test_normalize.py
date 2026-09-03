@@ -112,3 +112,11 @@ def test_title_format_does_not_change_hash_guid():
                         title_format="{title} - {author}")
     assert a.guid == b.guid
     assert b.title == "Same - X"
+
+
+def test_author_is_captured_from_author_and_dc_creator():
+    entries, _ = parse_feed((FIX / "substack.xml").read_bytes(), now=999)
+    # substack.xml carries <dc:creator>; feedparser folds it to `author`.
+    assert entries[0].author
+    entries, _ = parse_feed((FIX / "simple.xml").read_bytes(), now=999)
+    assert entries[0].author is None

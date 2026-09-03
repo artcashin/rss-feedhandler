@@ -76,6 +76,7 @@ def normalize_entry(entry, now: int, title_format: str | None = None) -> NewArti
         return None
     link = entry.get("link") or None
     summary = entry.get("summary") or None
+    author = _entry_field(entry, "author")
     published_at = _published(entry)
     # The fallback guid hashes the raw title, before any title_format is
     # applied: retuning a feed's template must not mint new guids and
@@ -89,6 +90,7 @@ def normalize_entry(entry, now: int, title_format: str | None = None) -> NewArti
         link=link,
         summary=summary,
         published_at=published_at,
+        author=author,
     )
 
 

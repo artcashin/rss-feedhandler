@@ -109,6 +109,21 @@ def test_last_seen_at_update_is_chunked_across_multiple_batches(store, feed, mon
     assert stale == [], f"guids whose last_seen_at was not updated: {stale}"
 
 
+def test_author_round_trips_and_may_be_null(store):
+    fid = store.upsert_feed("https://x.example/rss", now=0)
+    rows = store.insert_articles(
+        fid,
+        [
+            NewArticle("a", "With byline", None, None, 1, author="Jane Doe"),
+            NewArticle("b", "Without", None, None, 2),
+        ],
+        now=1000,
+    )
+    by_title = {r.title: r for r in rows}
+    assert by_title["With byline"].author == "Jane Doe"
+    assert by_title["Without"].author is None
+
+
 def test_future_dated_article_does_not_sort_ahead_in_paging(store):
     store.upsert_user("art", None)
     fid = store.upsert_feed("https://x.example/rss", now=0)

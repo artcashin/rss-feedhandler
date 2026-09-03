@@ -34,8 +34,8 @@ TIMEOUT_S = 15.0
 TOTAL_TIMEOUT_S = 60.0
 
 
-def user_agent(version: str, base_url: str) -> str:
-    return f"rss-ticker/{version} (+{base_url})"
+def user_agent(version: str) -> str:
+    return f"rss-ticker/{version} (+https://github.com/artcashin/rss-feedhandler)"
 
 
 def redact_feed_url(url: str) -> str:

@@ -85,6 +85,17 @@ async def test_payload_carries_feed_name_and_cursor(store):
     assert msg["id"]
     # feed_id is the stable key the widget maps to the feed's favicon.
     assert msg["feed_id"] == fid
+    assert msg["author"] is None
+
+
+async def test_payload_carries_author(store):
+    fid = add(store, ["art"])
+    b = Broadcaster(store)
+    sub = b.subscribe("art")
+    await b.publish(
+        store.insert_articles(fid, [NewArticle("a", "T", None, None, 1, author="Jane")], now=1000)
+    )
+    assert (await drain(sub))[0]["author"] == "Jane"
 
 
 async def test_two_subscribers_of_same_user_both_receive(store):
