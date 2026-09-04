@@ -65,23 +65,29 @@ async def subscribe(ws, base: str) -> dict:
     return reply["feeds"][0]
 
 
-async def test_subscribe_reply_then_new_article_reaches_a_real_client(live_server):
+async def test_subscribe_reply_then_articles_reach_a_real_client(live_server):
+    # The subscriber created the feed, so its cold start is pushed to it
+    # (the client seeded from /api/news before anything was cached), and
+    # the genuinely new article follows on the next poll.
     base, port, _ = live_server
     async with websockets.connect(f"ws://127.0.0.1:{port}/ws/news") as ws:
         record = await subscribe(ws, base)
         assert record["title"] == "Fixture"
-        raw = await asyncio.wait_for(ws.recv(), timeout=15)
-    msg = json.loads(raw)
-    assert msg["title"] == "Breaking now"
-    assert msg["feed_id"] == record["id"]
-    assert msg["source"] == "Fixture"
-    assert "highlighted" not in msg
+        first = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
+        second = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
+    assert first["title"] == "Backfilled"
+    assert second["title"] == "Breaking now"
+    for msg in (first, second):
+        assert msg["feed_id"] == record["id"]
+        assert msg["source"] == "Fixture"
+        assert "highlighted" not in msg
 
 
-async def test_backfilled_article_is_pageable_but_was_not_pushed(live_server):
+async def test_backfilled_article_is_pushed_to_its_subscriber_and_pageable(live_server):
     base, port, _ = live_server
     async with websockets.connect(f"ws://127.0.0.1:{port}/ws/news") as ws:
         await subscribe(ws, base)
+        assert json.loads(await asyncio.wait_for(ws.recv(), timeout=15))["title"] == "Backfilled"
         assert json.loads(await asyncio.wait_for(ws.recv(), timeout=15))["title"] == "Breaking now"
     import httpx
 
