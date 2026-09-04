@@ -41,12 +41,20 @@ class Poller:
         config: Config,
         on_new_articles: OnNewArticles,
         jitter: Callable[[], float] = _default_jitter,
+        has_subscribers: Callable[[int], bool] = lambda feed_id: False,
     ) -> None:
         self.store = store
         self.client = client
         self.config = config
         self.on_new_articles = on_new_articles
         self.jitter = jitter
+        # Whether anyone is watching a feed right now. A cold start is silent
+        # for a feed nobody watches (server restart), but a feed that exists
+        # BECAUSE a client just subscribed it has that client racing ahead:
+        # it seeded from /api/news before this first poll cached anything.
+        # Broadcasting the cold-start articles to it is the only way it ever
+        # sees them, short of waiting for the feed to publish something new.
+        self.has_subscribers = has_subscribers
         self._ua = user_agent(__version__)
         self.client.headers["User-Agent"] = self._ua
 
@@ -133,6 +141,10 @@ class Poller:
         )
 
         if cold_start:
+            if self.has_subscribers(feed.id):
+                log.info("Feed %s cold start: cached %d articles, broadcast to subscribers",
+                         redact_feed_url(feed.url), len(inserted))
+                return inserted
             log.info("Feed %s cold start: cached %d articles, broadcast none",
                      redact_feed_url(feed.url), len(inserted))
             return []

@@ -73,7 +73,10 @@ def build(config_path: Path, db_path: str, env: Mapping[str, str] | None = None)
     async def lifespan(app: FastAPI):
         client = httpx.AsyncClient(timeout=TIMEOUT_S, follow_redirects=True)
         holder["client"] = client
-        poller = Poller(store, client, config, on_new_articles=broadcaster.publish)
+        poller = Poller(
+            store, client, config, on_new_articles=broadcaster.publish,
+            has_subscribers=lambda feed_id: broadcaster.subscriber_count(feed_id) > 0,
+        )
         tasks = [
             asyncio.create_task(poller.run_forever()),
             asyncio.create_task(sweeper()),

@@ -444,3 +444,16 @@ async def test_retry_after_is_not_scaled_by_jitter(store):
     )
     await p.run_once(now=1000)
     assert store.get_feed_state(fid).next_poll_at == 1100
+
+
+async def test_cold_start_broadcasts_to_a_feed_that_already_has_subscribers(store):
+    # A client that subscribed a brand-new feed seeded from /api/news before
+    # this first poll cached anything; the cold-start articles go to it.
+    fid = store.upsert_feed("https://a.example/rss", now=0)
+    sent = []
+    p = make_poller(store, lambda r: httpx.Response(200, content=FEED_A), sent.extend)
+    p.has_subscribers = lambda feed_id: feed_id == fid
+    await p.run_once(now=100)
+    assert [a.title for a in sent] == ["First"]
+    rows, _ = store.page_news(limit=10)
+    assert [r.title for r in rows] == ["First"]
