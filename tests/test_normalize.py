@@ -1,3 +1,4 @@
+import feedparser
 from pathlib import Path
 
 from rss_ticker.normalize import parse_feed, normalize_entry
@@ -61,54 +62,26 @@ def test_hash_guid_distinguishes_same_title_different_dates():
     assert a.guid != b.guid
 
 
-def test_title_format_appends_author():
-    entries, _ = parse_feed(
-        (FIX / "substack.xml").read_bytes(), now=999,
-        title_format="{title} - {author}",
-    )
-    by_guid = {e.guid: e for e in entries}
-    assert by_guid["sub:1"].title == "Markets close higher - Bob Pisani"
-
-
-def test_title_format_accepts_the_raw_xml_tag_name():
-    # Substack's byline arrives as <dc:creator>; the placeholder may name the
-    # tag as it appears in the XML, not only feedparser's normalized key.
-    entries, _ = parse_feed(
-        (FIX / "substack.xml").read_bytes(), now=999,
-        title_format="{dc:creator}: {title}",
-    )
-    by_guid = {e.guid: e for e in entries}
-    assert by_guid["sub:1"].title == "Bob Pisani: Markets close higher"
-
-
-def test_title_format_missing_field_falls_back_to_plain_title():
-    entries, _ = parse_feed(
-        (FIX / "substack.xml").read_bytes(), now=999,
-        title_format="{title} - {author}",
-    )
-    by_guid = {e.guid: e for e in entries}
-    assert by_guid["sub:2"].title == "No byline here"
-
-
-def test_title_format_blank_field_falls_back_to_plain_title():
-    entries, _ = parse_feed(
-        (FIX / "substack.xml").read_bytes(), now=999,
-        title_format="{title} - {author}",
-    )
-    by_guid = {e.guid: e for e in entries}
-    assert by_guid["sub:3"].title == "Blank byline"
-
-
-def test_no_title_format_leaves_title_unchanged():
+def test_the_entry_title_is_stored_verbatim():
     e = normalize_entry({"title": "T", "author": "A"}, now=1)
     assert e.title == "T"
 
 
-def test_title_format_does_not_change_hash_guid():
-    # The fallback guid hashes the raw feed title, so retuning a feed's
-    # title_format later cannot resurrect every cached article as "new".
-    a = normalize_entry({"title": "Same"}, now=1)
-    b = normalize_entry({"title": "Same", "author": "X"}, now=1,
-                        title_format="{title} - {author}")
-    assert a.guid == b.guid
-    assert b.title == "Same - X"
+def test_author_is_captured_from_author_and_dc_creator():
+    entries, _ = parse_feed((FIX / "substack.xml").read_bytes(), now=999)
+    # substack.xml carries <dc:creator>; feedparser folds it to `author`.
+    assert entries[0].author
+    entries, _ = parse_feed((FIX / "simple.xml").read_bytes(), now=999)
+    assert entries[0].author is None
+
+
+def test_twice_escaped_title_is_decoded_once():
+    # PR Newswire wraps an already-escaped title in CDATA, so feedparser
+    # hands back "&amp;"; the stored title reads as a person wrote it.
+    xml = b"""<?xml version="1.0"?><rss version="2.0"><channel><title>t</title>
+    <item><title><![CDATA[Unlocking Ancient &amp; Modern &#39;Tech&#39; of Jinci Temple]]></title>
+    <link>https://x.example/a</link></item></channel></rss>"""
+    feed = feedparser.parse(xml)
+    article = normalize_entry(feed.entries[0], now=0)
+    assert article is not None
+    assert article.title == "Unlocking Ancient & Modern 'Tech' of Jinci Temple"

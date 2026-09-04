@@ -2,40 +2,18 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from rss_ticker.api import create_app
+from rss_ticker.api import INVALID_SUBSCRIBE, MAX_SUBSCRIBE_URLS, create_app, parse_subscribe
 from rss_ticker.broadcast import MAX_QUEUE, Broadcaster
-from rss_ticker.config import Config, UserConfig
+from rss_ticker.config import Config
 from rss_ticker.store import NewArticle, Store
 
-TOKEN = "tkn-" + "0123456789abcdef" * 3
-GOOD = f"/ws/news?user=art&token={TOKEN}"
-LOGIN = "you@github"
-IDENT = {"Tailscale-User-Login": LOGIN}
-# tailscale_login is inert while tailscale_auth is False -- identity_user
-# short-circuits on the flag before ever consulting this map. It is set here
-# anyway so a mutation that drops the flag check actually changes this
-# fixture's behaviour instead of leaving identity_users empty and the
-# mutation silently unobserved; see
-# test_ws_ignores_the_identity_header_when_tailscale_auth_is_off.
-CFG = Config(
-    public_base_url="http://x",
-    admin_key="k",
-    manifest_key="mk",
-    users=(UserConfig(id="art", tailscale_login=LOGIN),),
-)
-TS_CFG = Config(
-    public_base_url="https://t.example",
-    admin_key="k",
-    tailscale_auth=True,
-    bind_host="127.0.0.1",
-    users=(UserConfig(id="art", tailscale_login=LOGIN),),
-)
+A = "https://a.example/feed"
+B = "https://b.example/feed"
 
 
 @pytest.fixture
 def store():
     s = Store(":memory:")
-    s.upsert_user("art", None, token=TOKEN)
     yield s
     s.close()
 
@@ -47,104 +25,125 @@ def broadcaster(store):
 
 @pytest.fixture
 def client(store, broadcaster):
-    return TestClient(create_app(CFG, store, broadcaster))
+    return TestClient(create_app(Config(), store, broadcaster))
 
 
-@pytest.fixture
-def ts_client(store, broadcaster):
-    return TestClient(create_app(TS_CFG, store, broadcaster))
+def test_first_frame_subscribes_and_is_answered_with_feed_records(client, store, broadcaster):
+    with client.websocket_connect("/ws/news") as ws:
+        ws.send_json({"subscribe": [{"url": A, "name": "A wire"}, {"url": B}]})
+        reply = ws.receive_json()
+        assert [r["title"] for r in reply["feeds"]] == ["A wire", None]
+        assert [r["url"] for r in reply["feeds"]] == [A, B]
+        assert all(r["favicon"] is None for r in reply["feeds"])
+        ids = {r["id"] for r in reply["feeds"]}
+        assert broadcaster.session_count() == 1
+        assert all(broadcaster.subscriber_count(i) == 1 for i in ids)
+        assert all(store.get_feed(i).enabled for i in ids)
+    assert broadcaster.session_count() == 0
+    assert all(broadcaster.subscriber_count(i) == 0 for i in ids)
 
 
-def test_ws_accepts_known_user_and_registers_subscriber(client, broadcaster):
-    with client.websocket_connect(GOOD):
-        assert broadcaster.subscriber_count("art") == 1
+def test_subscribing_an_existing_url_reuses_the_feed_and_keeps_its_name(client, store):
+    fid = store.upsert_feed("https://A.example/feed/", name="Stored", now=0)
+    with client.websocket_connect("/ws/news") as ws:
+        ws.send_json({"subscribe": [{"url": A, "name": "Client name"}]})
+        reply = ws.receive_json()
+    assert reply["feeds"] == [{"id": fid, "url": A, "title": "Stored", "favicon": None}]
+    assert len(store.all_feeds()) == 1
 
 
-def test_ws_disconnect_removes_subscriber(client, broadcaster):
-    # This only covers the TestClient teardown path: Starlette tears the
-    # handler down by cancelling its task, so the `finally` runs even for a
-    # handler that never reads the socket. It therefore passes against a
-    # broken implementation. The real-socket guarantee -- that a client close
-    # unregisters the subscriber under uvicorn, with no publish to force the
-    # issue -- is pinned by
-    # tests/test_ws_live.py::test_closing_a_real_socket_unregisters_the_subscriber_without_a_publish
-    with client.websocket_connect(GOOD):
-        pass
-    assert broadcaster.subscriber_count("art") == 0
+def test_duplicate_urls_in_one_frame_collapse_to_one_record(client, store):
+    with client.websocket_connect("/ws/news") as ws:
+        ws.send_json({"subscribe": [{"url": A}, {"url": "HTTPS://a.example/feed/"}]})
+        reply = ws.receive_json()
+    assert len(reply["feeds"]) == 1
+    assert len(store.all_feeds()) == 1
 
 
-def test_ws_rejects_unknown_user_with_the_same_code_as_a_bad_token(client):
-    # Was asserting 4400. A distinct code for "no such user" is the same
-    # enumeration oracle the REST endpoints just closed.
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect(f"/ws/news?user=nobody&token={TOKEN}") as ws:
-            ws.receive_json()
-    assert exc.value.code == 4401
+def test_a_later_subscribe_replaces_the_set(client, store, broadcaster):
+    with client.websocket_connect("/ws/news") as ws:
+        ws.send_json({"subscribe": [{"url": A}]})
+        a = ws.receive_json()["feeds"][0]["id"]
+        ws.send_json({"subscribe": [{"url": B}]})
+        b = ws.receive_json()["feeds"][0]["id"]
+        assert (broadcaster.subscriber_count(a), broadcaster.subscriber_count(b)) == (0, 1)
+        assert store.get_feed(a).enabled is False
 
 
-def test_ws_rejects_missing_user(client):
+@pytest.mark.parametrize(
+    "frame",
+    [
+        "not json",
+        {"subscribe": "no"},
+        {"nope": []},
+        {"subscribe": [{"url": "ftp://x.example/feed"}]},
+        {"subscribe": [{"url": "javascript:alert(1)"}]},
+        {"subscribe": [{"url": A, "name": 3}]},
+        {"subscribe": [{"url": "x" * 3000}]},
+        {"subscribe": [{"url": f"https://h{i}.example/f"} for i in range(MAX_SUBSCRIBE_URLS + 1)]},
+        # urlsplit raises ValueError on an unclosed IPv6 literal ...
+        {"subscribe": [{"url": "http://[oops"}]},
+        # ... and json.loads raises RecursionError on deep nesting. Both used
+        # to escape through the handler's except clause as a bare 1006.
+        pytest.param("[" * 200000, id="deep-json"),
+    ],
+)
+def test_an_invalid_subscribe_frame_closes_4400_and_registers_nothing(
+    client, store, broadcaster, frame
+):
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect("/ws/news") as ws:
+            if isinstance(frame, str):
+                ws.send_text(frame)
+            else:
+                ws.send_json(frame)
             ws.receive_json()
-    assert exc.value.code == 4401
+    assert exc.value.code == INVALID_SUBSCRIBE
+    assert store.all_feeds() == []
+    assert broadcaster.session_count() == 0
 
 
-def test_ws_unknown_user_is_never_registered(client, broadcaster):
-    with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect("/ws/news?user=nobody") as ws:
-            ws.receive_json()
-    assert broadcaster.subscriber_count("nobody") == 0
+def test_parse_subscribe_trims_and_normalises_names():
+    assert parse_subscribe({"subscribe": [{"url": " https://a.example/f ", "name": "  "}]}) == [
+        ("https://a.example/f", None)
+    ]
+    assert parse_subscribe({"subscribe": []}) == []
+    assert parse_subscribe([]) is None
 
 
-def test_ws_rejects_a_missing_token(client):
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect("/ws/news?user=art") as ws:
-            ws.receive_json()
-    assert exc.value.code == 4401
+def test_articles_stream_after_the_reply_with_the_feed_id(client, store, broadcaster):
+    with client:
+        with client.websocket_connect("/ws/news") as ws:
+            ws.send_json({"subscribe": [{"url": A, "name": "A"}]})
+            fid = ws.receive_json()["feeds"][0]["id"]
+
+            async def publish():
+                arts = store.insert_articles(
+                    fid,
+                    [NewArticle("g", "Fed holds", "https://l", None, 1, author="Jane")],
+                    now=1000,
+                )
+                await broadcaster.publish(arts)
+
+            client.portal.call(publish)
+            msg = ws.receive_json()
+    assert (msg["feed_id"], msg["title"], msg["author"], msg["source"]) == (
+        fid,
+        "Fed holds",
+        "Jane",
+        "A",
+    )
+    assert "highlighted" not in msg
 
 
-def test_ws_rejects_a_wrong_token(client):
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect(f"/ws/news?user=art&token=wrong-{TOKEN}") as ws:
-            ws.receive_json()
-    assert exc.value.code == 4401
-
-
-def test_ws_bad_token_never_registers_a_subscriber(client, broadcaster):
-    # Subscribing first and closing after leaks a subscription and lets a frame
-    # be queued for an unauthenticated socket in the race window.
-    with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect("/ws/news?user=art&token=nope") as ws:
-            ws.receive_json()
-    assert broadcaster.subscriber_count("art") == 0
-
-
-def test_ws_rejects_another_users_token(client, store, broadcaster):
-    store.upsert_user("bob", None, token="bobs-" + TOKEN)
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect(f"/ws/news?user=bob&token={TOKEN}") as ws:
-            ws.receive_json()
-    assert exc.value.code == 4401
-    assert broadcaster.subscriber_count("bob") == 0
-
-
-def test_ws_closes_with_a_reconnect_code_when_the_subscriber_is_dropped(
-    client, store, broadcaster
-):
-    # A dropped subscriber must not become a zombie socket: the widget only
-    # reconnects and gap-fills on a real onclose, and 4401 is reserved for
-    # "stop, do not reconnect" -- so the drop has to surface as some other
-    # close code. Entering `with client:` shares the TestClient's portal
-    # (and therefore its event loop) with the websocket handler task, which
-    # lets us drive `broadcaster.publish` on that same loop from here.
-    fid = store.upsert_feed("https://x.example/rss", name="X", now=0)
-    store.subscribe("art", fid)
-
+def test_ws_closes_with_a_reconnect_code_when_the_subscriber_is_dropped(client, store, broadcaster):
+    fid = store.upsert_feed(A, name="A", now=0)
     with pytest.raises(WebSocketDisconnect) as exc:
         with client:
-            with client.websocket_connect(GOOD) as ws:
-                assert broadcaster.subscriber_count("art") == 1
-                sub = next(iter(broadcaster._subs["art"]))
+            with client.websocket_connect("/ws/news") as ws:
+                ws.send_json({"subscribe": [{"url": A}]})
+                ws.receive_json()
+                sub = next(iter(broadcaster._subs))
 
                 async def overflow_and_publish():
                     for i in range(MAX_QUEUE):
@@ -156,90 +155,16 @@ def test_ws_closes_with_a_reconnect_code_when_the_subscriber_is_dropped(
 
                 client.portal.call(overflow_and_publish)
                 ws.receive_json()
-
     assert exc.value.code == 1013
-    assert exc.value.code != 4401
 
 
-def test_ws_accepts_a_serve_identity(ts_client, broadcaster):
-    with ts_client.websocket_connect("/ws/news?user=art", headers=IDENT):
-        assert broadcaster.subscriber_count("art") == 1
-
-
-def test_ws_rejects_an_identity_for_another_user(ts_client, store, broadcaster):
-    store.upsert_user("bob", None)
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with ts_client.websocket_connect("/ws/news?user=bob", headers=IDENT) as ws:
-            # Fails fast if the guard regresses: under the bug the socket is
-            # authenticated and subscribed, and the receive below would block
-            # forever instead of failing.
-            assert broadcaster.subscriber_count("bob") == 0
-            ws.receive_json()
-    assert exc.value.code == 4401
-    assert broadcaster.subscriber_count("bob") == 0
-
-
-def test_ws_rejects_an_unknown_identity(ts_client, broadcaster):
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with ts_client.websocket_connect(
-            "/ws/news?user=art", headers={"Tailscale-User-Login": "nobody@github"}
-        ) as ws:
-            # Fails fast if the guard regresses: under the bug the socket is
-            # authenticated and subscribed, and the receive below would block
-            # forever instead of failing.
-            assert broadcaster.subscriber_count("art") == 0
-            ws.receive_json()
-    assert exc.value.code == 4401
-    assert broadcaster.subscriber_count("art") == 0
-
-
-GHOST_LOGIN = "ghost@github"
-TS_CFG_WITH_GHOST = Config(
-    public_base_url="https://t.example",
-    admin_key="k",
-    tailscale_auth=True,
-    bind_host="127.0.0.1",
-    users=(
-        UserConfig(id="art", tailscale_login=LOGIN),
-        UserConfig(id="ghost", tailscale_login=GHOST_LOGIN),
-    ),
-)
-
-
-@pytest.fixture
-def ghost_client(store, broadcaster):
-    return TestClient(create_app(TS_CFG_WITH_GHOST, store, broadcaster))
-
-
-def test_ws_rejects_an_identity_for_a_user_absent_from_the_store(ghost_client, broadcaster):
-    # "ghost" resolves through identity_users (built from config) but was
-    # never upserted into the store, so store.user_exists("ghost") is False.
-    # The REST path already requires `exists` before trusting an identity
-    # (require_user_token); this pins the same requirement on the WS path.
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with ghost_client.websocket_connect(
-            "/ws/news?user=ghost", headers={"Tailscale-User-Login": GHOST_LOGIN}
-        ) as ws:
-            # Fails fast if the guard regresses: under the bug the socket is
-            # authenticated and subscribed, and the receive below would block
-            # forever instead of failing.
-            assert broadcaster.subscriber_count("ghost") == 0
-            ws.receive_json()
-    assert exc.value.code == 4401
-    assert broadcaster.subscriber_count("ghost") == 0
-
-
-def test_ws_ignores_the_identity_header_when_tailscale_auth_is_off(client, broadcaster):
-    # Same security property as the REST path: without the flag the header is
-    # attacker-supplied text. Asserted via subscriber_count rather than a
-    # receive: if the guard regresses the socket authenticates, and a blocking
-    # receive_json() would hang the suite instead of failing it.
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect("/ws/news?user=art", headers=IDENT) as ws:
-            # Fails fast if the guard regresses: under the bug the socket is
-            # authenticated and subscribed, and the receive below would block
-            # forever instead of failing.
-            assert broadcaster.subscriber_count("art") == 0
-            ws.receive_json()
-    assert exc.value.code == 4401
-    assert broadcaster.subscriber_count("art") == 0
+def test_a_new_feed_triggers_on_feed_added_once(store, broadcaster):
+    added = []
+    app = create_app(Config(), store, broadcaster, on_feed_added=added.append)
+    client = TestClient(app)
+    with client.websocket_connect("/ws/news") as ws:
+        ws.send_json({"subscribe": [{"url": A}]})
+        ws.receive_json()
+        ws.send_json({"subscribe": [{"url": A}, {"url": B}]})
+        ws.receive_json()
+    assert [f.url for f in added] == [A, B]

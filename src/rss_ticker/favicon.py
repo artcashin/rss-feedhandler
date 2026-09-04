@@ -4,8 +4,9 @@ import asyncio
 import base64
 import html.parser
 import logging
+import re
 from typing import TYPE_CHECKING
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import httpx
 
@@ -33,6 +34,17 @@ _KNOWN_PROVIDER_HOSTS: dict[str, str] = {
     "feeds.bloomberg.com": "bloomberg.com",
     "feeds.content.dowjones.io": "wsj.com",
     "search.cnbc.com": "cnbc.com",
+}
+
+# Hosts whose bot wall 403s /favicon.ico and the homepage alike, whatever
+# the headers (verified 2026-09-03: www.ft.com answers a 270 KB challenge
+# page to everything but the feed), but whose icon lives on a CDN that
+# serves it plainly. Tried before the generic dance.
+_KNOWN_ICON_URLS: dict[str, str] = {
+    "www.ft.com": (
+        "https://images.ft.com/v3/image/raw/ftlogo-v1:brand-ft-logo-square-coloured"
+        "?source=next&format=png&width=32"
+    ),
 }
 
 # Two of the three known-provider domains (wsj.com, cnbc.com) 403 a request
@@ -161,6 +173,15 @@ async def _try_fetch_icon(
     return _data_uri(mime, body)
 
 
+def _google_news_site(parts) -> str | None:
+    """The `site:<domain>` a news.google.com search feed is scoped to, if any."""
+    if parts.hostname != "news.google.com":
+        return None
+    q = parse_qs(parts.query).get("q", [""])[0]
+    m = re.search(r"site:([A-Za-z0-9.-]+)", q)
+    return m.group(1).lower() if m else None
+
+
 async def resolve_favicon(client: httpx.AsyncClient, feed_url: str) -> str | None:
     """Best-effort resolution of a feed's site favicon as a data URI.
 
@@ -183,8 +204,21 @@ async def resolve_favicon(client: httpx.AsyncClient, feed_url: str) -> str | Non
             # than the publisher's real site (_KNOWN_PROVIDER_HOSTS); resolve
             # against the real domain in that case, with headers that make
             # the request look like a browser rather than a script.
+            known_icon = _KNOWN_ICON_URLS.get(host)
+            if known_icon is not None:
+                direct = await _try_fetch_icon(client, known_icon)
+                if direct is not None:
+                    return direct
+
             resolve_host = _KNOWN_PROVIDER_HOSTS.get(host, host)
             headers = _BROWSER_HEADERS if host in _KNOWN_PROVIDER_HOSTS else None
+            # A Google News search feed scoped with site:<domain> carries that
+            # publisher's headlines (Reuters retired its own feeds); its icon
+            # is the publisher's, not Google's, so resolve against the
+            # publisher, browser-like since newsrooms gate on headers.
+            site = _google_news_site(parts)
+            if site is not None:
+                resolve_host, headers = site, _BROWSER_HEADERS
 
             favicon_ico_url = f"https://{resolve_host}/favicon.ico"
             direct = await _try_fetch_icon(client, favicon_ico_url, headers=headers)
@@ -215,6 +249,18 @@ async def resolve_favicon(client: httpx.AsyncClient, feed_url: str) -> str | Non
         return None
 
 
+async def resolve_and_store(store: Store, client: httpx.AsyncClient, feed) -> None:
+    """Resolve one feed's favicon and store it; never raises, never wipes a
+    known icon on failure. Used at startup for every feed and at subscribe
+    time for a feed new to the pool (decision D)."""
+    try:
+        icon = await resolve_favicon(client, feed.url)
+        if icon:
+            store.set_feed_favicon(feed.id, icon)
+    except Exception as exc:
+        log.debug("Favicon resolution failed for %s: %s", redact_feed_url(feed.url), exc)
+
+
 async def refresh_favicons(
     store: Store, client: httpx.AsyncClient, *, concurrency: int = 8
 ) -> None:
@@ -227,9 +273,10 @@ async def refresh_favicons(
     response, a network error) or yields nothing simply keeps its last-known
     icon -- a transient failure must never wipe out a good one. There is no
     in-process retry beyond this one pass: the next restart is what
-    re-attempts it. A feed added to config.yaml only gets its favicon
-    resolved starting from the *next* restart, since this function itself
-    only runs once, at this startup.
+    re-attempts it. A feed that joins the pool later does not wait for that
+    restart -- the subscribe path resolves it on its own (decision D) via
+    resolve_and_store, since this function itself only runs once, at this
+    startup.
 
     Resolution work is fanned out concurrently across every feed, but bounded
     by a semaphore so a large feed list can't open an unbounded number of
@@ -239,7 +286,7 @@ async def refresh_favicons(
     individually guarded, so one bad feed (a hung host, a bad response, a
     store error) can never abort the others or propagate into the lifespan
     that started this task. Only the redacted host is ever logged -- never
-    the raw feed URL, never a token.
+    the raw feed URL, never an embedded credential.
     """
     try:
         feeds = store.all_feeds()
@@ -253,15 +300,6 @@ async def refresh_favicons(
 
     async def resolve_one(feed) -> None:
         async with sem:
-            try:
-                icon = await resolve_favicon(client, feed.url)
-                if icon:
-                    store.set_feed_favicon(feed.id, icon)
-            except Exception as exc:
-                log.debug(
-                    "Startup favicon refresh failed for %s: %s",
-                    redact_feed_url(feed.url),
-                    exc,
-                )
+            await resolve_and_store(store, client, feed)
 
     await asyncio.gather(*(resolve_one(f) for f in feeds))

@@ -10,3 +10,4 @@ ts.env
 ts-state/
 ts-config/
 .DS_Store
+.worktrees/

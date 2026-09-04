@@ -1,87 +1,19 @@
-public_base_url: https://ticker.example.net
+# rss-ticker: a user-agnostic shared feed pool. Clients subscribe feeds over
+# the websocket; nothing here names a feed, a user or a key. Every endpoint
+# is open -- run this tailnet-only (or otherwise placed), never funneled.
 
-# Gates writes on /api/feeds and the per-feed detail on /api/health.
-# Held by the operator only.
-admin_key: ${TICKER_ADMIN_KEY}
-
-# Gates /widgets.json and nothing else. This is the value you paste into OpenBB
-# Workspace, so it must NOT be the admin key -- a leak there must not confer
-# write access. Startup fails if the two are equal.
-manifest_key: ${TICKER_MANIFEST_KEY}
-
+# Articles a feed no longer lists are kept this long after they were last seen.
 retention_days: 7
+
+# Every feed polls at this interval. Be judicious: publishers monitor, and an
+# over-eager poller gets throttled or disconnected. 90 suits a pool of wires;
+# 300 suits blogs and newsletters.
 default_poll_interval_s: 300
+
 max_concurrent_polls: 8
 
-# Every user needs a token, minimum 32 characters. Generate one per user with:
-#   python -c "import secrets; print(secrets.token_urlsafe(32))"
-# Keep it in the environment, never in this file. A user with no token is a
-# startup error, not an open account.
-# Be judicious with poll intervals: publishers monitor, and an over-eager
-# poller gets throttled or disconnected -- sometimes mistaken for an attack.
-# Conditional GETs make polite polling cheap; they don't make rude polling safe.
-users:
-  - id: art
-    name: Art
-    token: ${TICKER_TOKEN_ART}
-    feeds:
-      - {url: "https://feeds.bloomberg.com/markets/news.rss", name: Bloomberg Markets, group: Markets, poll_interval_s: 90}
-      - {url: "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain", name: WSJ Markets, group: Markets, poll_interval_s: 90}
-      - {url: "https://markets.businessinsider.com/rss/news", name: Business Insider, group: Markets, poll_interval_s: 90}
-      # NYT sends no ETag or Last-Modified, so a poll can never be a cheap 304 --
-      # every one re-downloads ~100KB. Its CDN copy is max-age=300 anyway, so a
-      # faster interval would buy no freshness.
-      - {url: "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", name: NYT Business, group: Markets, poll_interval_s: 300}
-      # A different group becomes its own bottom tab.
-      - {url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114", name: CNBC, group: CNBC, poll_interval_s: 30}
-      - {url: "https://www.kiplinger.com/feed/all", name: Kiplinger, group: "Wealth M"}
-      # Substack works like any RSS feed; the `group` puts it in its own tab.
-      #
-      # `title_format` rebuilds the stored headline from the entry's fields.
-      # Placeholders name the XML tag ({dc:creator}) or feedparser's key for
-      # it ({author}, {title}, {summary}, ...). If any placeholder is missing
-      # or blank in an entry, that entry keeps its plain title -- no dangling
-      # " - ". Applies to articles fetched from now on; cached ones keep the
-      # title they were stored with. Reconciliation is additive: DELETING
-      # this line later does not clear the stored template -- set a new one,
-      # or clear the column in the database.
-      - url: "https://bobpisani.substack.com/feed"
-        name: Bob Pisani
-        group: Substack
-        title_format: "{title} - {author}"
-      - url: "https://roninsana.substack.com/feed"
-        name: Ron Insana
-        group: Substack
-        title_format: "{title} - {author}"
-      - url: "https://peterboockvar.substack.com/feed"
-        name: Peter Boockvar
-        group: Substack
-        title_format: "{title} - {author}"
-      # Danielle DiMartino Booth's "The Daily Feather"
-      - url: "https://dimartinobooth.substack.com/feed"
-        name: DiMartino Booth
-        group: Substack
-        title_format: "{title} - {author}"
-    filters:
-      - {pattern: nvidia, action: highlight}
-
-# ---------------------------------------------------------------------------
-# Tailscale identity auth (optional; default off)
-#
-# Behind Tailscale Serve, the caller's verified identity arrives as a request
-# header -- on plain requests AND on the WebSocket upgrade -- so no per-user
-# token needs to travel in a URL. Serve overwrites any client-supplied
-# Tailscale-User-* header, so it cannot be forged THROUGH Serve.
-#
-# It IS forgeable by anything that reaches this server around Serve, so
-# enabling this REQUIRES a loopback bind and startup fails otherwise.
-#
-# Caveats: every viewer must be on your tailnet, and Serve omits identity
-# headers for TAGGED devices -- tagging a viewing device silently breaks it.
-#
-# tailscale_auth: true
-# bind_host: 127.0.0.1
-# users:
-#   - id: art
-#     tailscale_login: you@github   # a Tailscale login, not an email
-#     # token and manifest_key become optional in this mode; admin_key does not
+# 0.0.0.0 inside a container whose port is not published; 127.0.0.1 when a
+# proxy on the same host (Tailscale Serve) is the only intended way in.
+# The tradeoff: 0.0.0.0 is reachable by anything that can route to this
+# container's network -- and this server has no authentication.
+bind_host: 0.0.0.0

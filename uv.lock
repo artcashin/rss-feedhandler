@@ -291,7 +291,7 @@ wheels = [
 
 [[package]]
 name = "rss-ticker"
-version = "0.4.0"
+version = "8.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
