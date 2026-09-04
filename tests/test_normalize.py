@@ -1,3 +1,4 @@
+import feedparser
 from pathlib import Path
 
 from rss_ticker.normalize import parse_feed, normalize_entry
@@ -72,3 +73,15 @@ def test_author_is_captured_from_author_and_dc_creator():
     assert entries[0].author
     entries, _ = parse_feed((FIX / "simple.xml").read_bytes(), now=999)
     assert entries[0].author is None
+
+
+def test_twice_escaped_title_is_decoded_once():
+    # PR Newswire wraps an already-escaped title in CDATA, so feedparser
+    # hands back "&amp;"; the stored title reads as a person wrote it.
+    xml = b"""<?xml version="1.0"?><rss version="2.0"><channel><title>t</title>
+    <item><title><![CDATA[Unlocking Ancient &amp; Modern &#39;Tech&#39; of Jinci Temple]]></title>
+    <link>https://x.example/a</link></item></channel></rss>"""
+    feed = feedparser.parse(xml)
+    article = normalize_entry(feed.entries[0], now=0)
+    assert article is not None
+    assert article.title == "Unlocking Ancient & Modern 'Tech' of Jinci Temple"

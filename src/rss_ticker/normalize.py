@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import calendar
 import hashlib
+import html
 
 import feedparser
 
@@ -33,7 +34,10 @@ def _hash_guid(title: str, published_at: int | None) -> str:
 # now is accepted for API symmetry with parse_feed but unused; published_at
 # is None when the entry has no date rather than falling back to now.
 def normalize_entry(entry, now: int) -> NewArticle | None:
-    title = (entry.get("title") or "").strip()
+    # feedparser decodes one level of escaping; a publisher that escapes its
+    # titles twice (PR Newswire: `&amp;` inside CDATA) leaves an entity behind,
+    # and it would render literally on every client. One more decode.
+    title = html.unescape((entry.get("title") or "")).strip()
     if not title:
         return None
     link = entry.get("link") or None
