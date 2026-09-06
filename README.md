@@ -104,6 +104,13 @@ delete every key but the four above (the server names the stale ones), drop
 OpenBB Workspace widgets are gone; the consumer is bdobb-v2 v8.0.0's News
 widget.
 
+## Acknowledgements
+
+rss-feedhandler is MIT and is built on FastAPI, uvicorn, httpx, feedparser and
+PyYAML. Every distribution in the image is listed with its licence text in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), generated from the built
+image by `python3 scripts/third-party-notices.py`; rerun it after `make buildx`.
+
 ## Multi-arch builds
 
 `make buildx` builds and pushes a `linux/amd64,linux/arm64` image to
