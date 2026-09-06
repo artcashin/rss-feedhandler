@@ -190,10 +190,8 @@ def test_retry_after_comfortably_above_floor_is_respected():
 # above-MAX_BACKOFF_S cap; the floor does not change that behavior.
 
 
-def test_user_agent_includes_version_and_url():
-    ua = user_agent("0.1.0", "http://nas.local:8088")
-    assert "rss-ticker/0.1.0" in ua
-    assert "nas.local" in ua
+def test_user_agent_includes_version_and_repo_url():
+    assert user_agent("9.9.9") == "rss-ticker/9.9.9 (+https://github.com/artcashin/rss-feedhandler)"
 
 
 async def test_http_date_retry_after_is_honored():

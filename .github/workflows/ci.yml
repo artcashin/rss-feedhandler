@@ -19,10 +19,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # Node is needed by the widget-JS suite (tests/harness runs under node).
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
       - name: Install
         run: pip install -e ".[dev]"
       - name: Lint

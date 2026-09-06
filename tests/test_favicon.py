@@ -160,9 +160,7 @@ async def test_svg_favicon_resolves():
 
 
 def _store():
-    s = Store(":memory:")
-    s.upsert_user("art", None)
-    return s
+    return Store(":memory:")
 
 
 def _unused_client() -> httpx.AsyncClient:
@@ -397,3 +395,76 @@ async def test_cap_accepts_a_real_world_101kb_icon():
     out = await call(handler, feed_url="https://x.example/rss")
     assert out is not None
     _b64_roundtrip(out, body, "image/x-icon")
+
+
+# www.ft.com's bot wall 403s /favicon.ico and the homepage regardless of
+# headers (verified 2026-09-03); its logo is served plainly by images.ft.com.
+
+async def test_known_icon_url_is_fetched_before_favicon_ico():
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(
+            200, content=SMALL_PNG, headers={"Content-Type": "image/png"}
+        )
+
+    out = await call(handler, feed_url="https://www.ft.com/markets?format=rss")
+    assert out is not None
+    _b64_roundtrip(out, SMALL_PNG, "image/png")
+    assert seen == [
+        "https://images.ft.com/v3/image/raw/ftlogo-v1:brand-ft-logo-square-coloured"
+        "?source=next&format=png&width=32"
+    ]
+
+
+async def test_known_icon_url_failure_falls_back_to_the_usual_dance():
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if request.url.host == "images.ft.com":
+            return httpx.Response(503)
+        return httpx.Response(
+            200, content=SMALL_PNG, headers={"Content-Type": "image/png"}
+        )
+
+    out = await call(handler, feed_url="https://www.ft.com/markets?format=rss")
+    assert out is not None
+    assert seen[1] == "https://www.ft.com/favicon.ico"
+
+
+# Reuters retired its public feeds (verified 2026-09-03: reuters.com 401s
+# them); a news.google.com search feed scoped with site:reuters.com is the
+# working substitute, and its icon is Reuters', not Google's.
+
+async def test_google_news_site_feed_resolves_against_the_publisher():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["user_agent"] = request.headers.get("user-agent", "")
+        return httpx.Response(
+            200, content=SMALL_PNG, headers={"Content-Type": "image/png"}
+        )
+
+    out = await call(
+        handler,
+        feed_url="https://news.google.com/rss/search?q=site:reuters.com+when:1d&hl=en-US",
+    )
+    assert out is not None
+    assert seen["url"] == "https://reuters.com/favicon.ico"
+    assert "python-httpx" not in seen["user_agent"].lower()
+
+
+async def test_google_news_feed_without_a_site_resolves_against_google():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(
+            200, content=SMALL_PNG, headers={"Content-Type": "image/png"}
+        )
+
+    await call(handler, feed_url="https://news.google.com/rss/search?q=fed+rates")
+    assert seen["url"] == "https://news.google.com/favicon.ico"

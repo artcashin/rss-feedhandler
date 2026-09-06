@@ -85,14 +85,14 @@ def test_one_thread_inside_a_store_method_blocks_all_others(store):
     store.db = _HookedConnection(real_db, on_execute=on_execute)
 
     def thread_a():
-        # upsert_user touches self.db.execute then commits -- a normal
+        # upsert_feed touches self.db.execute then commits -- a normal
         # write, but its first execute() call is now an artificial stall.
-        store.upsert_user("alice", "Alice", now=1)
+        store.upsert_feed("https://alice.example/rss", name="Alice", now=1)
 
     def thread_b():
         # A different store method. If the lock holds, this cannot
         # complete (or even start executing SQL) until thread A releases.
-        store.upsert_user("bob", "Bob", now=2)
+        store.upsert_feed("https://bob.example/rss", name="Bob", now=2)
         b_done.set()
 
     b_done = threading.Event()
@@ -126,26 +126,26 @@ def test_one_thread_inside_a_store_method_blocks_all_others(store):
     store.db = real_db
 
     # Both writes landed -- the point of serializing, not tearing, either one.
-    assert store.user_exists("alice")
-    assert store.user_exists("bob")
+    assert store.feed_by_url("https://alice.example/rss") is not None
+    assert store.feed_by_url("https://bob.example/rss") is not None
 
 
-def test_failing_insert_articles_batch_does_not_lose_a_concurrent_subscribe(store):
+def test_failing_insert_articles_batch_does_not_lose_a_concurrent_write(store):
     """Optional integration-level backstop for the lost-write scenario.
 
     One thread repeatedly runs a batch that is forced to raise partway
     through `insert_articles`'s `with self.db:` block (triggering an
     implicit rollback on the shared connection); another thread
-    concurrently subscribes a user to a feed. Without serialization, A's
-    rollback can discard B's committed row if the two interleave inside the
-    same connection-level transaction. This test is a realistic backstop,
-    not the deterministic proof above -- it is included in addition to,
-    never instead of, the forced-interleave test.
+    concurrently commits an unrelated feed write. Without serialization,
+    A's rollback can discard B's committed row if the two interleave
+    inside the same connection-level transaction. This test is a realistic
+    backstop, not the deterministic proof above -- it is included in
+    addition to, never instead of, the forced-interleave test.
     """
     from rss_ticker.store import NewArticle
 
     feed_id = store.upsert_feed("https://x.example/rss", now=0)
-    store.upsert_user("art", "Art")
+    FAVICON = "data:image/png;base64,AAAA"
 
     stop = threading.Event()
     iterations = {"n": 0}
@@ -172,12 +172,12 @@ def test_failing_insert_articles_batch_does_not_lose_a_concurrent_subscribe(stor
             finally:
                 store.db = real_db
 
-    def subscribe_once():
+    def write_once():
         time.sleep(0.001)
-        store.subscribe("art", feed_id)
+        store.set_feed_favicon(feed_id, FAVICON)
 
     t_a = threading.Thread(target=hammer_failing_inserts)
-    t_b = threading.Thread(target=subscribe_once)
+    t_b = threading.Thread(target=write_once)
     t_a.start()
     t_b.start()
     t_b.join(timeout=10)
@@ -186,6 +186,6 @@ def test_failing_insert_articles_batch_does_not_lose_a_concurrent_subscribe(stor
 
     assert not t_a.is_alive()
     assert not t_b.is_alive()
-    assert "art" in store.subscribers_of(feed_id), (
-        "the committed subscription was torn by a concurrent thread's rollback"
+    assert store.get_feed(feed_id).favicon == FAVICON, (
+        "the committed write was torn by a concurrent thread's rollback"
     )
