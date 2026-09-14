@@ -8,7 +8,6 @@ from rss_ticker.store import MIN_SQLITE, Store, NewArticle
 @pytest.fixture
 def store():
     s = Store(":memory:")
-    s.upsert_user("art", None)
     yield s
     s.close()
 
@@ -27,7 +26,6 @@ def test_sweep_ignores_sort_at(store):
     # A January-dated item that only arrived today must survive: retention is
     # measured on when we last saw the item, never on its publication date.
     fid = store.upsert_feed("https://x.example/rss", now=0)
-    store.subscribe("art", fid)
     store.insert_articles(
         fid,
         [NewArticle("old-date-new-arrival", "t", None, None, published_at=1)],
@@ -35,16 +33,15 @@ def test_sweep_ignores_sort_at(store):
     )
     deleted = store.sweep(now=100 * DAY, retention_days=7)
     assert deleted == 0
-    rows, _ = store.page_news("art", limit=10)
+    rows, _ = store.page_news(limit=10)
     assert len(rows) == 1
 
 
 def test_sweep_deletes_articles_past_retention(store):
     fid = store.upsert_feed("https://x.example/rss", now=0)
-    store.subscribe("art", fid)
     store.insert_articles(fid, [NewArticle("a", "t", None, None, None)], now=1 * DAY)
     assert store.sweep(now=10 * DAY, retention_days=7) == 1
-    assert store.page_news("art", limit=10)[0] == []
+    assert store.page_news(limit=10)[0] == []
 
 
 def test_item_still_in_the_feed_is_never_swept_or_rebroadcast(store):
@@ -53,7 +50,6 @@ def test_item_still_in_the_feed_is_never_swept_or_rebroadcast(store):
     # elapses, the next poll re-inserts them, RETURNING calls them new, and the
     # poller broadcasts January press releases as breaking news.
     fid = store.upsert_feed("https://ir.example/rss", now=0)
-    store.subscribe("art", fid)
     entries = [
         NewArticle("pr-1", "Q4 results", None, None, published_at=1 * DAY),
         NewArticle("pr-2", "Board appointment", None, None, published_at=1 * DAY),
@@ -66,13 +62,12 @@ def test_item_still_in_the_feed_is_never_swept_or_rebroadcast(store):
         assert again == [], f"day {day}: an item still in the feed re-broadcast"
         store.sweep(now=day * DAY, retention_days=7)
 
-    rows, _ = store.page_news("art", limit=10)
+    rows, _ = store.page_news(limit=10)
     assert len(rows) == 2, "items still present in the feed were swept"
 
 
 def test_item_dropped_from_the_feed_is_swept_after_retention(store):
     fid = store.upsert_feed("https://news.example/rss", now=0)
-    store.subscribe("art", fid)
     stays = NewArticle("keep", "still listed", None, None, None)
     goes = NewArticle("drop", "rolled off the feed", None, None, None)
     store.insert_articles(fid, [stays, goes], now=1 * DAY)
@@ -82,7 +77,7 @@ def test_item_dropped_from_the_feed_is_swept_after_retention(store):
         store.insert_articles(fid, [stays], now=day * DAY)
 
     assert store.sweep(now=11 * DAY, retention_days=7) == 1
-    rows, _ = store.page_news("art", limit=10)
+    rows, _ = store.page_news(limit=10)
     assert [r.guid for r in rows] == ["keep"]
 
 
@@ -118,7 +113,7 @@ def test_opening_a_pre_last_seen_database_migrates_and_backfills(tmp_path: Path)
 
     store = Store(path)
     try:
-        rows, _ = store.page_news("art", limit=10)
+        rows, _ = store.page_news(limit=10)
         assert [r.last_seen_at for r in rows] == [864000], "backfill did not run"
         assert store.sweep(now=864000, retention_days=7) == 0
     finally:

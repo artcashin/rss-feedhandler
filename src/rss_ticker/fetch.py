@@ -34,23 +34,24 @@ TIMEOUT_S = 15.0
 TOTAL_TIMEOUT_S = 60.0
 
 
-def user_agent(version: str, base_url: str) -> str:
-    return f"rss-ticker/{version} (+{base_url})"
+def user_agent(version: str) -> str:
+    return f"rss-ticker/{version} (+https://github.com/artcashin/rss-feedhandler)"
 
 
 def redact_feed_url(url: str) -> str:
     """Reduce a feed URL to scheme and host.
 
     Feed URLs routinely carry credentials -- `?apikey=`, a signed path segment,
-    or `user:token@host`. `.hostname` is used rather than `.netloc` precisely
+    or `user:secret@host`. `.hostname` is used rather than `.netloc` precisely
     because netloc keeps the userinfo. `.port` raises ValueError for a
     non-numeric port (e.g. `host:abc`), so that access is guarded too --
     anything unparseable redacts rather than raising.
 
-    Lives here rather than in api.py or poller.py: both need it (api.py to
-    redact `/api/feeds` for non-admin callers, poller.py to keep feed.url out
-    of every poll log line), and fetch.py is the lowest-level module that
-    already speaks in feed URLs, with no dependency on either caller.
+    Lives here because the poller's log lines need it -- feed.url must stay
+    out of every poll line -- and fetch.py is the lowest-level module that
+    already speaks in feed URLs, with no dependency on its caller. Nothing in
+    the API redacts any more: `/api/feeds` returns feed URLs verbatim to
+    whoever can reach the port.
     """
     parts = urlsplit(url)
     host = parts.hostname or ""

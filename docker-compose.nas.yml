@@ -2,8 +2,9 @@
 #
 # The tailscale container owns the network namespace; the ticker joins it, so
 # the pair appear on the tailnet as one node named "rss-ticker". NOTHING is
-# published to the LAN -- Tailscale Serve is the only way in, which is exactly
-# what makes the Tailscale-User-Login header trustworthy.
+# published to the LAN -- with `bind_host: 127.0.0.1` in config/config.yaml,
+# Tailscale Serve is the only way in, and reachability is the only access
+# control this server has.
 #
 #   https://rss-ticker.your-tailnet.ts.net/   (Serve terminates TLS, real LE cert)
 #
@@ -18,15 +19,16 @@ services:
       - ./ts.env
     environment:
       - TS_HOSTNAME=rss-ticker
-      # MANDATORY. The image defaults to userspace networking, where
-      # tailscaled terminates inbound tailnet connections itself and
-      # forwards them to 127.0.0.1 -- which makes a loopback-bound app
-      # reachable AROUND Serve, where the identity header is forgeable.
-      # Verified on this NAS 2026-07-28: with userspace networking a
-      # forged Tailscale-User-Login sent straight to the node's tailnet
-      # IP:8088 returned 200. Kernel mode (this setting, plus the tun
-      # device and NET_ADMIN below) makes the tailnet IP a real
-      # interface, so a 127.0.0.1 socket is genuinely unreachable.
+      # MANDATORY. Kernel mode (this setting, plus the tun device and
+      # NET_ADMIN below) makes the tailnet IP a real interface, so an app
+      # bound to 127.0.0.1 is genuinely unreachable from the tailnet and
+      # Serve is the only path to it. The image defaults to userspace
+      # networking, where tailscaled terminates inbound tailnet connections
+      # itself and forwards them to 127.0.0.1 -- a loopback bind is then
+      # reachable AROUND Serve. Same hole if `bind_host` is 0.0.0.0: every
+      # tailnet peer can hit the port directly. This server has no
+      # authentication, so any peer that reaches it has full access --
+      # it can make the server poll any URL and read every article.
       - TS_USERSPACE=false
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SERVE_CONFIG=/config/serve.json
@@ -40,7 +42,7 @@ services:
       - NET_RAW
 
   rss-ticker:
-    image: ghcr.io/artcashin/rss-ticker:8.0.0
+    image: ghcr.io/artcashin/rss-feedhandler:8.0.0
     container_name: rss-ticker
     restart: unless-stopped
     # Share the sidecar netns: the ticker has no network identity of its own,

@@ -1,4 +1,4 @@
-IMAGE   ?= ghcr.io/artcashin/rss-ticker
+IMAGE   ?= ghcr.io/artcashin/rss-feedhandler
 TAG     ?= 8.0.0
 BUILDER ?= rss-ticker-builder
 

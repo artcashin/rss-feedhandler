@@ -1,138 +1,117 @@
-"""What an existing deployment experiences on upgrade.
-
-The database migrates itself and leaves pre-existing accounts closed. The
-config does not migrate itself: both new secrets are required, and a config
-missing either must fail at startup rather than boot into a server that 401s
-everything or, worse, one that serves something.
-"""
+"""What an existing v8 deployment experiences on upgrade: the user tables go,
+the feed knobs go, URLs are canonicalised, articles keep their history."""
 
 import sqlite3
 from pathlib import Path
 
-import pytest
-from fastapi.testclient import TestClient
-
-from rss_ticker.config import ConfigError
-from rss_ticker.main import build
 from rss_ticker.store import Store
 
-TOKEN = "tkn-" + "0123456789abcdef" * 3
 
-OLD_CONFIG = """
-public_base_url: http://nas.local:8088
-admin_key: test-key
-users:
-  - id: art
-    name: Art
-    feeds:
-      - {url: "https://a.example/rss", name: A}
-"""
-
-WITH_MANIFEST_KEY = OLD_CONFIG.replace(
-    "admin_key: test-key\n", "admin_key: test-key\nmanifest_key: manifest-key\n"
-)
-NEW_CONFIG = WITH_MANIFEST_KEY.replace(
-    "    name: Art\n", f"    name: Art\n    token: {TOKEN}\n"
-)
-
-
-def old_database(path: str) -> None:
-    """A users table as it existed before the token column."""
+def v8_database(path: str) -> None:
     db = sqlite3.connect(path)
-    db.execute(
-        "CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT, "
-        "created_at INTEGER NOT NULL DEFAULT 0)"
+    db.executescript(
+        """
+        CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT, created_at INTEGER NOT NULL DEFAULT 0, token TEXT);
+        CREATE TABLE feeds (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, name TEXT,
+            poll_interval_s INTEGER, enabled INTEGER NOT NULL DEFAULT 1, favicon TEXT,
+            "group" TEXT, title_format TEXT);
+        CREATE TABLE subscriptions (user_id TEXT NOT NULL, feed_id INTEGER NOT NULL, PRIMARY KEY (user_id, feed_id));
+        CREATE TABLE articles (id INTEGER PRIMARY KEY, feed_id INTEGER NOT NULL, guid TEXT NOT NULL,
+            title TEXT NOT NULL, link TEXT, summary TEXT, published_at INTEGER, fetched_at INTEGER NOT NULL,
+            sort_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL DEFAULT 0, UNIQUE (feed_id, guid));
+        CREATE TABLE feed_state (feed_id INTEGER PRIMARY KEY, etag TEXT, last_modified TEXT,
+            last_polled_at INTEGER, last_success_at INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT, next_poll_at INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE filter_rules (id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, pattern TEXT NOT NULL,
+            action TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
+        INSERT INTO users VALUES ('art', 'Art', 0, 'tkn');
+        INSERT INTO feeds (id, url, name, poll_interval_s, "group", title_format)
+            VALUES (1, 'HTTPS://A.example/feed/', 'A', 90, 'Markets', '{title} - {author}'),
+                   (2, 'https://a.example/feed', 'A dup', NULL, NULL, NULL),
+                   (3, 'https://b.example/feed', 'B', NULL, NULL, NULL);
+        INSERT INTO subscriptions VALUES ('art', 1);
+        INSERT INTO articles (feed_id, guid, title, fetched_at, sort_at, last_seen_at)
+            VALUES (3, 'g', 'Kept', 100, 100, 100);
+        INSERT INTO feed_state (feed_id, next_poll_at) VALUES (1, 0), (2, 0), (3, 0);
+        INSERT INTO filter_rules (user_id, pattern, action) VALUES ('art', 'nvidia', 'highlight');
+        """
     )
-    db.execute("INSERT INTO users (id, name) VALUES ('art', 'Art')")
     db.commit()
     db.close()
 
 
-def test_upgrading_without_a_manifest_key_fails_loudly(tmp_path: Path):
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text(OLD_CONFIG)
-    with pytest.raises(ConfigError, match="manifest_key"):
-        build(cfg, str(tmp_path / "t.db"), env={})
+def tables(path: str) -> set[str]:
+    return {
+        r[0] for r in sqlite3.connect(path).execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
 
 
-def test_upgrading_with_a_tokenless_config_fails_loudly(tmp_path: Path):
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text(WITH_MANIFEST_KEY)
-    with pytest.raises(ConfigError, match="art"):
-        build(cfg, str(tmp_path / "t.db"), env={})
+def user_version(path: str) -> int:
+    return sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0]
 
 
-def test_an_old_database_gains_the_column_and_keeps_its_users(tmp_path: Path):
-    db_path = str(tmp_path / "t.db")
-    old_database(db_path)
-    store = Store(db_path)
+def columns(path: str, table: str) -> set[str]:
+    return {r[1] for r in sqlite3.connect(path).execute(f"PRAGMA table_info({table})")}
+
+
+def test_v8_database_migrates_in_place(tmp_path: Path):
+    db = str(tmp_path / "t.db")
+    v8_database(db)
+    store = Store(db)
     try:
-        assert store.user_exists("art") is True
-        assert store.token_for("art") is None
+        assert not ({"users", "subscriptions", "filter_rules"} & tables(db))
+        assert columns(db, "feeds") == {"id", "url", "name", "enabled", "favicon"}
+        assert "author" in columns(db, "articles")
+        # Feed 3 canonicalises to itself; feed 1's canonical form collides with
+        # feed 2, so feed 1 is left as-is and feed 2 remains the reachable one.
+        assert store.feed_by_url("https://a.example/feed").id == 2
+        assert store.get_feed(1).url == "HTTPS://A.example/feed/"
+        assert [a.title for a in store.page_news(limit=10)[0]] == ["Kept"]
     finally:
         store.close()
 
 
-def test_boot_writes_the_configured_token_onto_an_existing_user(tmp_path: Path):
-    db_path = str(tmp_path / "t.db")
-    old_database(db_path)
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text(NEW_CONFIG)
-
-    app = build(cfg, db_path, env={})
-    with TestClient(app) as client:
-        assert client.get(
-            "/api/news", params={"user": "art", "token": TOKEN}
-        ).status_code == 200
-        assert client.get("/api/news", params={"user": "art"}).status_code == 401
+def test_migration_is_idempotent(tmp_path: Path):
+    db = str(tmp_path / "t.db")
+    v8_database(db)
+    Store(db).close()
+    Store(db).close()
+    assert columns(db, "feeds") == {"id", "url", "name", "enabled", "favicon"}
 
 
-def test_a_user_left_out_of_the_config_stays_closed(tmp_path: Path):
-    db_path = str(tmp_path / "t.db")
-    old_database(db_path)
-    store = Store(db_path)
-    store.upsert_user("ghost", "Ghost")
-    store.close()
+def test_canonicalisation_runs_once_and_never_re_strips(tmp_path: Path):
+    """One-slash stripping is not a fixed point: `/f//` -> `/f/` -> `/f`.
 
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text(NEW_CONFIG)
-    app = build(cfg, db_path, env={})
-    with TestClient(app) as client:
-        assert client.get("/api/news", params={"user": "ghost"}).status_code == 401
-        # A candidate token must be supplied here, not just omitted: token_ok
-        # short-circuits to False on a falsy `provided` before ever looking at
-        # `expected`, so a tokenless request can't tell an orphan that stayed
-        # closed apart from one reconciliation left open. TOKEN is the value
-        # config.yaml assigns to art -- the one a reconciliation bug would be
-        # most likely to leak onto an unrelated row.
-        assert client.get(
-            "/api/news", params={"user": "ghost", "token": TOKEN}
-        ).status_code == 401
-
-    store = Store(db_path)
-    try:
-        assert store.token_for("ghost") is None
-    finally:
-        store.close()
-
-
-def test_feeds_table_gains_title_format_on_upgrade(tmp_path: Path):
-    """A database from before per-feed title formats opens and migrates."""
-    db_path = str(tmp_path / "t.db")
-    db = sqlite3.connect(db_path)
-    db.execute(
-        "CREATE TABLE feeds (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, "
-        "name TEXT, poll_interval_s INTEGER, enabled INTEGER NOT NULL DEFAULT 1)"
+    Re-running it on every open would walk the URL down a slash at a time,
+    and each step splits the feed row -- a new id, no articles. The
+    `user_version` gate is what stops it.
+    """
+    db = str(tmp_path / "t.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE feeds (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, name TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1, favicon TEXT);
+        CREATE TABLE articles (id INTEGER PRIMARY KEY, feed_id INTEGER NOT NULL, guid TEXT NOT NULL,
+            title TEXT NOT NULL, link TEXT, summary TEXT, published_at INTEGER, fetched_at INTEGER NOT NULL,
+            sort_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL DEFAULT 0, UNIQUE (feed_id, guid));
+        CREATE TABLE feed_state (feed_id INTEGER PRIMARY KEY, etag TEXT, last_modified TEXT,
+            last_polled_at INTEGER, last_success_at INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT, next_poll_at INTEGER NOT NULL DEFAULT 0);
+        INSERT INTO feeds (id, url, name) VALUES (1, 'https://a.example/f//', 'A');
+        INSERT INTO articles (feed_id, guid, title, fetched_at, sort_at, last_seen_at)
+            VALUES (1, 'g', 'Kept', 100, 100, 100);
+        INSERT INTO feed_state (feed_id, next_poll_at) VALUES (1, 0);
+        """
     )
-    db.execute("INSERT INTO feeds (url, name) VALUES ('https://a.example/rss', 'A')")
-    db.commit()
-    db.close()
+    conn.commit()
+    conn.close()
 
-    store = Store(db_path)
-    try:
-        feed = store.all_feeds()[0]
-        assert feed.title_format is None
-        store.upsert_feed("https://a.example/rss", title_format="{title} - {author}")
-        assert store.all_feeds()[0].title_format == "{title} - {author}"
-    finally:
-        store.close()
+    for open_number in range(3):
+        store = Store(db)
+        try:
+            assert [(f.id, f.url) for f in store.all_feeds()] == [(1, "https://a.example/f/")]
+            assert [a.title for a in store.page_news(limit=10)[0]] == ["Kept"]
+            assert user_version(db) == 1, f"open {open_number + 1}"
+        finally:
+            store.close()
