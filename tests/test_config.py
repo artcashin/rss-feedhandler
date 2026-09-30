@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from rss_ticker.config import ConfigError, load_config
+from rss_ticker.config import Channel, ConfigError, load_config
 
 
 def write(tmp_path: Path, text: str) -> Path:
@@ -75,3 +75,70 @@ def test_missing_file_and_directory_are_named_errors(tmp_path):
 def test_root_must_be_a_mapping(tmp_path):
     with pytest.raises(ConfigError, match="mapping"):
         load_config(write(tmp_path, "- just\n- a list\n"), {})
+
+
+
+def test_live_tv_is_empty_when_absent(tmp_path):
+    cfg = load_config(write(tmp_path, "retention_days: 7\n"), {})
+    assert cfg.live_tv == ()
+
+
+def test_live_tv_parses_channels_in_order(tmp_path):
+    p = write(tmp_path, """
+live_tv:
+  - key: bloomberg-tv
+    label: Bloomberg TV
+    handle: "@markets"
+  - key: yahoo-finance
+    label: Yahoo Finance
+    handle: "@YahooFinance"
+""")
+    cfg = load_config(p, {})
+    assert cfg.live_tv == (
+        Channel("bloomberg-tv", "Bloomberg TV", "@markets"),
+        Channel("yahoo-finance", "Yahoo Finance", "@YahooFinance"),
+    )
+
+
+def test_live_tv_empty_list_is_off(tmp_path):
+    cfg = load_config(write(tmp_path, "live_tv: []\n"), {})
+    assert cfg.live_tv == ()
+
+
+def test_live_tv_rejects_duplicate_keys(tmp_path):
+    p = write(tmp_path, """
+live_tv:
+  - {key: dup, label: A, handle: "@a"}
+  - {key: dup, label: B, handle: "@b"}
+""")
+    with pytest.raises(ConfigError, match="dup"):
+        load_config(p, {})
+
+
+def test_live_tv_rejects_a_bad_key_slug(tmp_path):
+    p = write(tmp_path, 'live_tv:\n  - {key: "Bad Key", label: A, handle: "@a"}\n')
+    with pytest.raises(ConfigError, match="key"):
+        load_config(p, {})
+
+
+def test_live_tv_rejects_a_bad_handle(tmp_path):
+    p = write(tmp_path, 'live_tv:\n  - {key: ok, label: A, handle: "markets"}\n')
+    with pytest.raises(ConfigError, match="handle"):
+        load_config(p, {})
+
+
+def test_live_tv_rejects_a_missing_field(tmp_path):
+    p = write(tmp_path, 'live_tv:\n  - {key: ok, handle: "@a"}\n')
+    with pytest.raises(ConfigError, match="label"):
+        load_config(p, {})
+
+
+def test_live_tv_rejects_an_unknown_field(tmp_path):
+    p = write(tmp_path, 'live_tv:\n  - {key: ok, label: A, handle: "@a", extra: 1}\n')
+    with pytest.raises(ConfigError, match="extra"):
+        load_config(p, {})
+
+
+def test_live_tv_must_be_a_list(tmp_path):
+    with pytest.raises(ConfigError, match="live_tv"):
+        load_config(write(tmp_path, "live_tv: not-a-list\n"), {})

@@ -1,9 +1,13 @@
+from pathlib import Path
+
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from rss_ticker.api import DEGRADED_AFTER_FAILURES, create_app
 from rss_ticker.broadcast import Broadcaster
-from rss_ticker.config import Config
+from rss_ticker.config import Channel, Config
+from rss_ticker.live import LiveTV
 from rss_ticker.store import NewArticle, Store
 
 
@@ -22,6 +26,27 @@ def broadcaster(store):
 @pytest.fixture
 def client(store, broadcaster):
     return TestClient(create_app(Config(), store, broadcaster))
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+CHANNELS = (
+    Channel("bloomberg-tv", "Bloomberg TV", "@markets"),
+    Channel("yahoo-finance", "Yahoo Finance", "@YahooFinance"),
+)
+
+
+def live_client(store, broadcaster, mode="live"):
+    def handler(request):
+        if mode == "error":
+            raise httpx.ConnectError("refused")
+        name = "youtube_live.html" if mode == "live" else "youtube_offline.html"
+        return httpx.Response(200, text=(FIXTURES / name).read_text())
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    live = LiveTV(CHANNELS, client_getter=lambda: http, clock=lambda: 0.0)
+    app = create_app(Config(live_tv=CHANNELS), store, broadcaster, live=live)
+    return TestClient(app)
 
 
 def seed(store, n=3, url="https://x.example/rss", name="X"):
@@ -130,13 +155,22 @@ def test_disabled_feed_failures_do_not_degrade(client, store):
     assert client.get("/api/health").json()["status"] == "ok"
 
 
-def test_retired_routes_are_gone(client):
-    for path in ("/widgets.json", "/widget"):
-        assert client.get(path).status_code == 404
+def test_widget_singular_route_is_gone_and_feeds_is_read_only(client):
+    # The old iframe widget page stays gone.
+    assert client.get("/widget").status_code == 404
     # /api/feeds still exists, read-only: a write to it is method-not-allowed.
     assert client.post("/api/feeds", json={}).status_code == 405
     # The per-feed delete route is gone outright, so the path itself is unknown.
     assert client.delete("/api/feeds/1").status_code == 404
+
+
+def test_feature_off_widgets_is_empty_and_live_routes_404(client):
+    # Default Config() has no live_tv, so create_app got live=None.
+    r = client.get("/widgets.json")
+    assert r.status_code == 200
+    assert r.json() == {}
+    assert client.get("/api/live/channels").status_code == 404
+    assert client.get("/api/live/video", params={"channel": "bloomberg-tv"}).status_code == 404
 
 
 def test_cors_admits_the_tauri_origin_without_credentials(client):
@@ -165,3 +199,54 @@ def test_news_filters_to_one_feed_so_a_quiet_feed_is_never_crowded_out(client, s
     assert [a["title"] for a in body["articles"]] == ["Weekly note"]
     assert body["next_cursor"] is None
     assert client.get("/api/news", params={"feed_id": 0}).status_code == 422
+
+
+def test_widgets_manifest_shape(store, broadcaster):
+    c = live_client(store, broadcaster)
+    manifest = c.get("/widgets.json").json()
+    assert set(manifest) == {"live_tv"}
+    w = manifest["live_tv"]
+    assert w["name"] == "Live TV"
+    assert w["type"] == "youtube"
+    assert w["endpoint"] == "/api/live/video"
+    assert w["gridData"] == {"w": 20, "h": 12}
+    assert len(w["params"]) == 1
+    p = w["params"][0]
+    assert p["paramName"] == "channel"
+    assert p["type"] == "endpoint"
+    assert p["label"] == "Channel"
+    assert p["optionsEndpoint"] == "/api/live/channels"
+    assert p["value"] == "bloomberg-tv"  # the first channel is the default
+
+
+def test_channels_are_options_in_config_order(store, broadcaster):
+    c = live_client(store, broadcaster)
+    assert c.get("/api/live/channels").json() == [
+        {"label": "Bloomberg TV", "value": "bloomberg-tv"},
+        {"label": "Yahoo Finance", "value": "yahoo-finance"},
+    ]
+
+
+def test_video_unknown_channel_is_404(store, broadcaster):
+    c = live_client(store, broadcaster)
+    assert c.get("/api/live/video", params={"channel": "nope"}).status_code == 404
+
+
+def test_video_missing_channel_param_is_422(store, broadcaster):
+    c = live_client(store, broadcaster)
+    assert c.get("/api/live/video").status_code == 422
+
+
+def test_video_live_returns_watch_url_as_text(store, broadcaster):
+    c = live_client(store, broadcaster, mode="live")
+    r = c.get("/api/live/video", params={"channel": "bloomberg-tv"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    assert r.text == "https://www.youtube.com/watch?v=livevid0001"
+
+
+def test_video_off_air_is_empty_200(store, broadcaster):
+    c = live_client(store, broadcaster, mode="offline")
+    r = c.get("/api/live/video", params={"channel": "bloomberg-tv"})
+    assert r.status_code == 200
+    assert r.text == ""

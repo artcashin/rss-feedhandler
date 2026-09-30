@@ -17,6 +17,7 @@ from .broadcast import Broadcaster
 from .config import ConfigError, load_config
 from .favicon import refresh_favicons, resolve_and_store
 from .fetch import TIMEOUT_S
+from .live import LiveTV
 from .poller import Poller
 from .store import Feed, Store
 
@@ -48,6 +49,11 @@ def build(config_path: Path, db_path: str, env: Mapping[str, str] | None = None)
     # fire-and-forget favicon task can be collected mid-flight. Keep a strong
     # reference until it finishes.
     background: set[asyncio.Task] = set()
+
+    # Live TV shares the lifespan httpx client (reached through the same holder
+    # the favicon path uses) and the wall clock. None when no channels are
+    # configured, which makes /widgets.json {} and /api/live/* 404.
+    live = LiveTV(config.live_tv, client_getter=lambda: holder.get("client")) if config.live_tv else None
 
     def on_feed_added(feed: Feed) -> None:
         client = holder.get("client")
@@ -101,6 +107,7 @@ def build(config_path: Path, db_path: str, env: Mapping[str, str] | None = None)
         lifespan=lifespan,
         health_strict=health_strict,
         on_feed_added=on_feed_added,
+        live=live,
     )
     app.state.bind_host = config.bind_host
     return app
