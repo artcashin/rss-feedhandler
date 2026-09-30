@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .broadcast import Broadcaster, article_payload
 from .config import Config
+from .live import LiveTV
 from .store import CursorError, Feed, Store
 
 # bdobb-v2's origins: the Vite dev server, its browser-mode e2e server, and
@@ -79,6 +80,35 @@ def feed_record(feed: Feed) -> dict:
     return {"id": feed.id, "url": feed.url, "title": feed.name, "favicon": feed.favicon}
 
 
+def live_widgets_manifest(channels) -> dict:
+    """The OpenBB Workspace widgets manifest for the Live TV widget.
+
+    Empty when no channels are configured: an empty dict is a valid manifest
+    ("this backend publishes no widgets"), which OpenBB clients accept, whereas
+    a 404 would surface as a backend error. So /widgets.json is always 200 and
+    the *feature* being off is expressed as {} rather than a missing route.
+    """
+    if not channels:
+        return {}
+    return {
+        "live_tv": {
+            "name": "Live TV",
+            "type": "youtube",
+            "endpoint": "/api/live/video",
+            "gridData": {"w": 20, "h": 12},
+            "params": [
+                {
+                    "paramName": "channel",
+                    "type": "endpoint",
+                    "label": "Channel",
+                    "optionsEndpoint": "/api/live/channels",
+                    "value": channels[0].key,
+                }
+            ],
+        }
+    }
+
+
 def create_app(
     config: Config,
     store: Store,
@@ -86,6 +116,7 @@ def create_app(
     lifespan=None,
     health_strict: bool = False,
     on_feed_added: OnFeedAdded | None = None,
+    live: LiveTV | None = None,
 ) -> FastAPI:
     app = FastAPI(title="rss-ticker", version=__version__, lifespan=lifespan)
     app.add_middleware(
@@ -99,6 +130,7 @@ def create_app(
     app.state.store = store
     app.state.broadcaster = broadcaster
     app.state.health_strict = health_strict
+    app.state.live = live
 
     @app.get("/")
     def root() -> dict:
@@ -155,6 +187,32 @@ def create_app(
             "sessions": broadcaster.session_count(),
             "feeds": feeds,
         }
+
+    @app.get("/widgets.json")
+    def widgets_manifest() -> dict:
+        # Open like every other route (this server has no auth by design). When
+        # live is None or has no channels, this is {}.
+        channels = live.channels if live is not None else ()
+        return live_widgets_manifest(channels)
+
+    @app.get("/api/live/channels")
+    def live_channels() -> list[dict]:
+        if live is None or not live.channels:
+            raise HTTPException(status_code=404, detail="live tv is not configured")
+        # OpenBB option shape: {label, value}, in config order.
+        return [{"label": c.label, "value": c.key} for c in live.channels]
+
+    @app.get("/api/live/video")
+    async def live_video(channel: str = Query(...)) -> Response:
+        if live is None or channel not in live:
+            # Only configured keys are accepted, so this endpoint can never be
+            # driven to fetch an arbitrary URL.
+            raise HTTPException(status_code=404, detail="unknown channel")
+        vid = await live.video_id(channel)
+        # text/plain, matching the card's contract: a watch URL when live, an
+        # empty body (still 200) when off-air or the lookup has nothing.
+        body = f"https://www.youtube.com/watch?v={vid}" if vid else ""
+        return Response(content=body, media_type="text/plain")
 
     def resolve_subscription(entries: list[tuple[str, str | None]]) -> tuple[list[dict], set[int]]:
         """Upsert each URL into the pool; report which were new."""
