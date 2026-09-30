@@ -9,12 +9,28 @@ import yaml
 
 _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
+# A channel key is a URL-safe slug (it becomes a query-param value and an
+# OpenBB option value). A handle is a YouTube @handle: the leading @ then the
+# characters YouTube allows in a handle. Both are validated at load so a
+# malformed config fails at boot -- the same loud-failure contract the four
+# operational keys already have -- rather than surfacing as a 404 or a
+# mis-built /@<handle>/live URL at request time.
+_KEY_RE = re.compile(r"[a-z0-9-]+")
+_HANDLE_RE = re.compile(r"@[A-Za-z0-9._-]+")
+
+
+@dataclass(frozen=True)
+class Channel:
+    key: str
+    label: str
+    handle: str
+
 # The whole vocabulary. Anything else is an error, so a config from the
 # user-and-key era (users:, the admin and manifest keys, the public base url,
 # ...) fails loudly at boot instead of being silently ignored into an empty
 # pool.
 KNOWN_KEYS = frozenset(
-    {"retention_days", "default_poll_interval_s", "max_concurrent_polls", "bind_host"}
+    {"retention_days", "default_poll_interval_s", "max_concurrent_polls", "bind_host", "live_tv"}
 )
 
 
@@ -28,6 +44,7 @@ class Config:
     default_poll_interval_s: int = 300
     max_concurrent_polls: int = 8
     bind_host: str = "0.0.0.0"
+    live_tv: tuple[Channel, ...] = ()
 
 
 def _expand(value, env: Mapping[str, str]):
@@ -60,6 +77,48 @@ def _positive_int(raw: dict, key: str, default: int) -> int:
     if value < 1:
         raise ConfigError(f"{key} must be at least 1, got {value!r}")
     return value
+
+
+_CHANNEL_FIELDS = ("key", "label", "handle")
+
+
+def _channels(raw: dict) -> tuple[Channel, ...]:
+    """Parse and validate the optional live_tv list.
+
+    Absent or empty means the feature is off, so this returns (). Every other
+    shape is checked and any problem raises ConfigError, naming the offending
+    value -- validating here (not at request time) means a bad handle can never
+    become a fetch against a mis-built URL, and a duplicate key can never
+    silently shadow an earlier channel.
+    """
+    value = raw.get("live_tv")
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConfigError(f"live_tv must be a list of channels, got {type(value).__name__}")
+    channels: list[Channel] = []
+    seen: set[str] = set()
+    for i, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ConfigError(f"live_tv[{i}] must be a mapping with key, label, handle")
+        unknown = sorted(str(k) for k in item if k not in _CHANNEL_FIELDS)
+        if unknown:
+            raise ConfigError(f"live_tv[{i}] has unknown fields: {', '.join(unknown)}")
+        for field in _CHANNEL_FIELDS:
+            if not isinstance(item.get(field), str) or not item[field]:
+                raise ConfigError(f"live_tv[{i}] {field} must be a non-empty string")
+        key, label, handle = item["key"], item["label"], item["handle"]
+        if not _KEY_RE.fullmatch(key):
+            raise ConfigError(f"live_tv[{i}] key {key!r} must match [a-z0-9-]+")
+        if not _HANDLE_RE.fullmatch(handle):
+            raise ConfigError(f"live_tv[{i}] handle {handle!r} must look like @name")
+        if key in seen:
+            raise ConfigError(f"live_tv has a duplicate key: {key}")
+        seen.add(key)
+        channels.append(Channel(key=key, label=label, handle=handle))
+    # A tuple, not the list: Config is frozen and compares by value, and the
+    # field is typed tuple[Channel, ...].
+    return tuple(channels)
 
 
 def load_config(path: Path, env: Mapping[str, str]) -> Config:
@@ -111,4 +170,5 @@ def load_config(path: Path, env: Mapping[str, str]) -> Config:
         default_poll_interval_s=_positive_int(raw, "default_poll_interval_s", 300),
         max_concurrent_polls=_positive_int(raw, "max_concurrent_polls", 8),
         bind_host=bind_host,
+        live_tv=_channels(raw),
     )
