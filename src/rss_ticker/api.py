@@ -8,12 +8,13 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
 from .broadcast import Broadcaster, article_payload
 from .config import Config
-from .live import LiveTV
+from .live import LiveTV, wrapper_html
 from .store import CursorError, Feed, Store
 
 # bdobb-v2's origins: the Vite dev server, its browser-mode e2e server, and
@@ -213,6 +214,22 @@ def create_app(
         # empty body (still 200) when off-air or the lookup has nothing.
         body = f"https://www.youtube.com/watch?v={vid}" if vid else ""
         return Response(content=body, media_type="text/plain")
+
+    @app.get("/yt")
+    async def live_wrapper(channel: str = Query(...)) -> HTMLResponse:
+        # The Live TV wrapper page (see live.wrapper_html). Same key rule as
+        # /api/live/video: only configured channels, so no arbitrary fetch.
+        if live is None or channel not in live:
+            raise HTTPException(status_code=404, detail="unknown channel")
+        vid = await live.video_id(channel)
+        label = next(c.label for c in live.channels if c.key == channel)
+        return HTMLResponse(
+            wrapper_html(label, vid),
+            # The embed's Referer must be this origin; say so explicitly rather
+            # than rely on the browser default. no-cache: the live id changes
+            # when a stream restarts, and the server already caches it 5 min.
+            headers={"Referrer-Policy": "strict-origin-when-cross-origin", "Cache-Control": "no-cache"},
+        )
 
     def resolve_subscription(entries: list[tuple[str, str | None]]) -> tuple[list[dict], set[int]]:
         """Upsert each URL into the pool; report which were new."""

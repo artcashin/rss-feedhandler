@@ -250,3 +250,40 @@ def test_video_off_air_is_empty_200(store, broadcaster):
     r = c.get("/api/live/video", params={"channel": "bloomberg-tv"})
     assert r.status_code == 200
     assert r.text == ""
+
+
+# ---- /yt: the Live TV wrapper page (8.2.0) ---------------------------------
+# A desktop app's pages come from a custom scheme, so a YouTube embed framed
+# there carries no usable Referer and YouTube answers Error 153. Framing THIS
+# page instead makes the embed's Referer this server's own https origin.
+
+
+def test_wrapper_live_embeds_the_current_video(store, broadcaster):
+    c = live_client(store, broadcaster, mode="live")
+    r = c.get("/yt", params={"channel": "bloomberg-tv"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert 'src="https://www.youtube.com/embed/livevid0001' in r.text
+    assert r.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+
+
+def test_wrapper_off_air_shows_a_note_and_no_player(store, broadcaster):
+    c = live_client(store, broadcaster, mode="offline")
+    r = c.get("/yt", params={"channel": "bloomberg-tv"})
+    assert r.status_code == 200
+    assert "<iframe" not in r.text
+    assert "Bloomberg TV is off air" in r.text
+
+
+def test_wrapper_unknown_channel_is_404(store, broadcaster):
+    c = live_client(store, broadcaster)
+    assert c.get("/yt", params={"channel": "nope"}).status_code == 404
+
+
+def test_wrapper_missing_channel_is_422(store, broadcaster):
+    c = live_client(store, broadcaster)
+    assert c.get("/yt").status_code == 422
+
+
+def test_wrapper_is_404_when_live_tv_is_off(client):
+    assert client.get("/yt", params={"channel": "bloomberg-tv"}).status_code == 404

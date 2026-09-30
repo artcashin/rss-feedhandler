@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import re
@@ -165,3 +166,30 @@ class LiveTV:
         )
         resp.raise_for_status()
         return parse_live_video_id(resp.text)
+
+
+def wrapper_html(label: str, video_id: str | None) -> str:
+    """The Live TV wrapper page: the channel's live video, or an off-air note.
+
+    Why a page at all: a desktop app (Tauri) serves its UI from a custom scheme,
+    so a YouTube embed it frames carries no usable Referer, and YouTube refuses
+    it ("Error 153: video player configuration error"). Framing THIS page
+    instead -- which embeds the video itself -- makes the embed's Referer this
+    server's own https origin, which YouTube accepts. `video_id` has already
+    passed parse_live_video_id's 11-character check, so it is safe to place in
+    the URL; the label comes from config and is escaped anyway.
+    """
+    name = html.escape(label)
+    if video_id is None:
+        body = (f'<p style="margin:auto;color:#9ca3af;font:14px system-ui,sans-serif">'
+                f"{name} is off air</p>")
+    else:
+        body = (f'<iframe title="{name}" src="https://www.youtube.com/embed/{video_id}?autoplay=1&amp;mute=1" '
+                'style="border:0;width:100%;height:100%" '
+                'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" '
+                'referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>')
+    return ("<!doctype html><html><head><meta charset=\"utf-8\">"
+            "<meta name=\"referrer\" content=\"strict-origin-when-cross-origin\">"
+            f"<title>{name}</title></head>"
+            '<body style="margin:0;height:100vh;display:flex;background:#000">'
+            f"{body}</body></html>")

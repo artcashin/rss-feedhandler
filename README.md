@@ -96,6 +96,7 @@ empty the feature is off.
     GET  /widgets.json                one "Live TV" youtube widget (or {} when off)
     GET  /api/live/channels           [{label, value}] for the Channel picker
     GET  /api/live/video?channel=KEY  text/plain watch URL when live, empty when off-air
+    GET  /yt?channel=KEY              an HTML page embedding the live video (or an off-air note)
 
 On each `/api/live/video` request the server fetches the channel's
 `https://www.youtube.com/@<handle>/live`, reads the current video id from the
@@ -104,6 +105,11 @@ when the stream is live now — an upcoming or ended stream reads as off-air (an
 empty body). The id is cached 5 minutes per channel; a fetch error keeps
 serving the last good id for up to 30 minutes. Unknown channel keys are 404, so
 the endpoint can never be driven to fetch an arbitrary URL.
+
+`/yt` is that embed wrapped in a page of its own: a desktop app whose pages come
+from a custom scheme can frame `/yt` (for example in a Website card) and YouTube
+sees this server's https origin as the Referer, which it requires. The page
+starts muted so it may autoplay.
 
 BDOBB's YouTube card consumes this: it takes the watch URL and frames the video
 through a small public wrapper page, because YouTube refuses an embed whose
