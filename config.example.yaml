@@ -30,6 +30,9 @@ live_tv:
   - key: yahoo-finance
     label: Yahoo Finance
     handle: "@YahooFinance"
+  - key: schwab-network
+    label: Schwab Network
+    handle: "@SchwabNetwork"
   - key: cnbc-television
     label: CNBC Television
     handle: "@CNBCtelevision"   # events only -- off-air (empty) between shows
