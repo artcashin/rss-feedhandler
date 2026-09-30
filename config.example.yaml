@@ -17,3 +17,19 @@ max_concurrent_polls: 8
 # The tradeoff: 0.0.0.0 is reachable by anything that can route to this
 # container's network -- and this server has no authentication.
 bind_host: 0.0.0.0
+
+# Optional: a Live TV widget for OpenBB Workspace / bdobb. Each channel is a
+# YouTube @handle whose /live page is checked on demand (cached 5 minutes) for
+# a currently-live stream. Omit this section, or leave it empty, and the
+# feature is off: no widget appears in widgets.json and /api/live/* return 404.
+# The first channel is the default shown in the widget's Channel picker.
+live_tv:
+  - key: bloomberg-tv
+    label: Bloomberg TV
+    handle: "@markets"          # Bloomberg Television's markets stream (default)
+  - key: yahoo-finance
+    label: Yahoo Finance
+    handle: "@YahooFinance"
+  - key: cnbc-television
+    label: CNBC Television
+    handle: "@CNBCtelevision"   # events only -- off-air (empty) between shows

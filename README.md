@@ -85,6 +85,30 @@ expansion is still honoured but nothing requires it.
 Poll cadence is global: choose `default_poll_interval_s` for the pool as a
 whole (90 s suits wires; 300 s suits blogs).
 
+
+## Live TV
+
+An optional Live TV widget for OpenBB Workspace. Configure a short list of
+YouTube channels under `live_tv` in `config.yaml` (each `{key, label, handle}`,
+`handle` like `@markets`); the first is the default. With the section absent or
+empty the feature is off.
+
+    GET  /widgets.json                one "Live TV" youtube widget (or {} when off)
+    GET  /api/live/channels           [{label, value}] for the Channel picker
+    GET  /api/live/video?channel=KEY  text/plain watch URL when live, empty when off-air
+
+On each `/api/live/video` request the server fetches the channel's
+`https://www.youtube.com/@<handle>/live`, reads the current video id from the
+page's player data, and returns `https://www.youtube.com/watch?v=<id>` only
+when the stream is live now — an upcoming or ended stream reads as off-air (an
+empty body). The id is cached 5 minutes per channel; a fetch error keeps
+serving the last good id for up to 30 minutes. Unknown channel keys are 404, so
+the endpoint can never be driven to fetch an arbitrary URL.
+
+BDOBB's YouTube card consumes this: it takes the watch URL and frames the video
+through a small public wrapper page, because YouTube refuses an embed whose
+request carries no usable `Referer`. That wrapper lives outside this repo.
+
 ## Health and logging
 
 `GET /api/health` returns `{status, version, sessions, feeds}` with the full
