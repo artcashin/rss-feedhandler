@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 _MARKER = "ytInitialPlayerResponse"
 # An id is exactly 11 URL-safe base64 characters. Anything else is a parser
 # artifact, not a real id, so it is rejected rather than framed.
-_VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
+VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 
 # Cache windows. A fresh entry is served without refetching for 5 minutes
 # (the rate ceiling: <=1 outbound request per channel per 5 minutes). On a
@@ -61,7 +61,7 @@ def parse_live_video_id(html: str) -> str | None:
     if not isinstance(details, dict):
         return None
     vid = details.get("videoId")
-    if not isinstance(vid, str) or not _VIDEO_ID_RE.fullmatch(vid):
+    if not isinstance(vid, str) or not VIDEO_ID_RE.fullmatch(vid):
         return None
     # Live now is the tight signal: a currently-live watch page carries
     # videoDetails.isLive == true. Upcoming and ended pages don't, and an ended

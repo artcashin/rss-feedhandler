@@ -97,6 +97,7 @@ empty the feature is off.
     GET  /api/live/channels           [{label, value}] for the Channel picker
     GET  /api/live/video?channel=KEY  text/plain watch URL when live, empty when off-air
     GET  /yt?channel=KEY              an HTML page embedding the live video (or an off-air note)
+    GET  /yt?id=VIDEO_ID              the same page for one known video (no lookup)
 
 On each `/api/live/video` request the server fetches the channel's
 `https://www.youtube.com/@<handle>/live`, reads the current video id from the

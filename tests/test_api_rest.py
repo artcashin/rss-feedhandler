@@ -280,9 +280,28 @@ def test_wrapper_unknown_channel_is_404(store, broadcaster):
     assert c.get("/yt", params={"channel": "nope"}).status_code == 404
 
 
-def test_wrapper_missing_channel_is_422(store, broadcaster):
+def test_wrapper_by_id_embeds_that_video(client):
+    # No live_tv config needed: an id is a fixed page, no lookup, no upstream.
+    r = client.get("/yt", params={"id": "QB5BNdBFujE"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert 'src="https://www.youtube.com/embed/QB5BNdBFujE?autoplay=1' in r.text
+    assert r.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+
+
+@pytest.mark.parametrize("bad", ["short", "QB5BNdBFujE1", "QB5BNdBFuj!", "<script>xx", ""])
+def test_wrapper_bad_id_is_400(client, bad):
+    assert client.get("/yt", params={"id": bad}).status_code == 400
+
+
+def test_wrapper_channel_and_id_together_is_400(store, broadcaster):
+    c = live_client(store, broadcaster, mode="live")
+    assert c.get("/yt", params={"channel": "bloomberg-tv", "id": "QB5BNdBFujE"}).status_code == 400
+
+
+def test_wrapper_with_neither_param_is_400(store, broadcaster):
     c = live_client(store, broadcaster)
-    assert c.get("/yt").status_code == 422
+    assert c.get("/yt").status_code == 400
 
 
 def test_wrapper_is_404_when_live_tv_is_off(client):
