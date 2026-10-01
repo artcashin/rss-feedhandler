@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .broadcast import Broadcaster, article_payload
 from .config import Config
-from .live import LiveTV, wrapper_html
+from .live import VIDEO_ID_RE, LiveTV, wrapper_html
 from .store import CursorError, Feed, Store
 
 # bdobb-v2's origins: the Vite dev server, its browser-mode e2e server, and
@@ -216,13 +216,27 @@ def create_app(
         return Response(content=body, media_type="text/plain")
 
     @app.get("/yt")
-    async def live_wrapper(channel: str = Query(...)) -> HTMLResponse:
-        # The Live TV wrapper page (see live.wrapper_html). Same key rule as
-        # /api/live/video: only configured channels, so no arbitrary fetch.
-        if live is None or channel not in live:
-            raise HTTPException(status_code=404, detail="unknown channel")
-        vid = await live.video_id(channel)
-        label = next(c.label for c in live.channels if c.key == channel)
+    async def live_wrapper(channel: str | None = Query(None), id: str | None = Query(None)) -> HTMLResponse:
+        # The Live TV wrapper page (see live.wrapper_html), in two forms:
+        #   ?channel=KEY  looks the configured channel's live id up (8.2.0);
+        #                 same key rule as /api/live/video, so no arbitrary fetch;
+        #   ?id=VIDEO     wraps one known video (8.3.0) -- what a YouTube card
+        #                 that already has the id frames, so no lookup and no
+        #                 upstream call at all.
+        # Exactly one of the two. The id is checked against the same
+        # 11-character rule the lookup applies, so nothing else can reach the
+        # page's embed URL.
+        if (channel is None) == (id is None):
+            raise HTTPException(status_code=400, detail="pass exactly one of channel or id")
+        if id is not None:
+            if not VIDEO_ID_RE.fullmatch(id):
+                raise HTTPException(status_code=400, detail="invalid video id")
+            label, vid = "YouTube", id
+        else:
+            if live is None or channel not in live:
+                raise HTTPException(status_code=404, detail="unknown channel")
+            vid = await live.video_id(channel)
+            label = next(c.label for c in live.channels if c.key == channel)
         return HTMLResponse(
             wrapper_html(label, vid),
             # The embed's Referer must be this origin; say so explicitly rather
