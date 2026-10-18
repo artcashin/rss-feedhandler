@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import email.utils
+import ipaddress
 import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -64,6 +65,28 @@ def redact_feed_url(url: str) -> str:
     if not parts.scheme or not host:
         return "(redacted)"
     return f"{parts.scheme}://{host}"
+
+
+async def refuse_internal(request: httpx.Request) -> None:
+    """httpx request hook: refuse a hop whose host resolves to a non-public
+    address (loopback, RFC1918, link-local, CGNAT/tailnet, the docker bridge,
+    a compose service name). httpx runs request hooks on the first request
+    and on every redirect hop, so a public feed that 302s inward is refused
+    too. The pool has no authentication, so this is its SSRF guard.
+
+    ponytail: resolve-then-connect, so DNS rebinding between this lookup and
+    httpx's own connect is not closed; pin the checked IP in a custom
+    transport if that ever matters.
+    """
+    host = request.url.host
+    infos = await asyncio.get_running_loop().getaddrinfo(
+        host, request.url.port or 443, type=0, proto=6
+    )
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        if not ip.is_global or ip.is_multicast:
+            raise httpx.RequestError(f"refused non-public address for {host}", request=request)
 
 
 @dataclass(frozen=True)

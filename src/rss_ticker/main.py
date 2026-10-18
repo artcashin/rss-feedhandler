@@ -16,7 +16,7 @@ from .api import create_app
 from .broadcast import Broadcaster
 from .config import ConfigError, load_config
 from .favicon import refresh_favicons, resolve_and_store
-from .fetch import TIMEOUT_S
+from .fetch import TIMEOUT_S, refuse_internal
 from .live import LiveTV
 from .poller import Poller
 from .store import Feed, Store
@@ -77,7 +77,12 @@ def build(config_path: Path, db_path: str, env: Mapping[str, str] | None = None)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
-        client = httpx.AsyncClient(timeout=TIMEOUT_S, follow_redirects=True)
+        client = httpx.AsyncClient(
+            timeout=TIMEOUT_S,
+            follow_redirects=True,
+            max_redirects=5,
+            event_hooks={"request": [refuse_internal]},
+        )
         holder["client"] = client
         poller = Poller(
             store, client, config, on_new_articles=broadcaster.publish,

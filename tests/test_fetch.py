@@ -206,3 +206,27 @@ async def test_http_date_retry_after_is_honored():
         out = await fetch_feed(client, "https://x.example/rss", None, None)
     assert out.status == "failed"
     assert out.retry_after is not None and 110 <= out.retry_after <= 125
+
+
+async def test_redirect_to_internal_address_is_refused_public_redirect_followed():
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if request.url.path == "/inward":
+            return httpx.Response(302, headers={"Location": "http://169.254.169.254/latest"})
+        if request.url.path == "/upgrade":
+            return httpx.Response(301, headers={"Location": "https://1.1.1.1/rss"})
+        return httpx.Response(200, content=b"<rss/>")
+
+    async with httpx.AsyncClient(
+        transport=transport(handler), event_hooks={"request": [fetch.refuse_internal]}
+    ) as client:
+        refused = await fetch_feed(client, "http://8.8.8.8/inward", None, None)
+        followed = await fetch_feed(client, "http://8.8.8.8/upgrade", None, None)
+        direct = await fetch_feed(client, "http://127.0.0.1:6900/", None, None)
+
+    assert refused.status == "failed" and "non-public" in refused.error
+    assert followed.status == "ok" and followed.body == b"<rss/>"
+    assert direct.status == "failed"
+    assert not any("169.254" in u or "127.0.0.1" in u for u in seen)
