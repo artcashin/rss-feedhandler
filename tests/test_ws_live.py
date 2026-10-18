@@ -27,7 +27,12 @@ def free_port() -> int:
 
 
 @pytest.fixture
-def live_server(tmp_path: Path, request):
+def live_server(tmp_path: Path, request, monkeypatch):
+    # The fixture feed is served from 127.0.0.1, which the SSRF guard refuses.
+    async def allow(request):
+        return None
+
+    monkeypatch.setattr("rss_ticker.main.refuse_internal", allow)
     poll_interval_s = getattr(request, "param", 1)
     port = free_port()
     base = f"http://127.0.0.1:{port}"
