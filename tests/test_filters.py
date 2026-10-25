@@ -1,3 +1,6 @@
+# Copyright 2026 Art Cashin.
+# SPDX-License-Identifier: AGPL-3.0-only
+
 from rss_ticker.filters import FilterRule, evaluate, highlights, include_patterns
 
 

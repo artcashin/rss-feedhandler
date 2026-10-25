@@ -1,3 +1,6 @@
+# Copyright 2026 Art Cashin.
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """Guards against exactly the drift that shipped as v8.0.1: pyproject.toml's
 version and rss_ticker.__version__ (what the running app actually reports,
 in /api/health and the outbound User-Agent) are two independent strings with

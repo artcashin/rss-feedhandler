@@ -1,3 +1,6 @@
+# Copyright 2026 Art Cashin.
+# SPDX-License-Identifier: AGPL-3.0-only
+
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -20,7 +23,7 @@ RUN apt-get update \
     && chown -R ticker:ticker /data /config
 
 WORKDIR /app
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md LICENSE LICENSE.upstream LICENSING.md ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 

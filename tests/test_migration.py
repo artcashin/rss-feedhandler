@@ -1,3 +1,6 @@
+# Copyright 2026 Art Cashin.
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """What an existing deployment experiences on upgrade.
 
 The database migrates itself and leaves pre-existing accounts closed. The

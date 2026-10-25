@@ -1,3 +1,6 @@
+# Copyright 2026 Art Cashin.
+# SPDX-License-Identifier: AGPL-3.0-only
+
 import logging
 import sqlite3
 import time

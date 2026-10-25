@@ -1,3 +1,6 @@
+# Copyright 2026 Art Cashin.
+# SPDX-License-Identifier: AGPL-3.0-only
+
 import pytest
 from pathlib import Path
 from rss_ticker.config import load_config, ConfigError

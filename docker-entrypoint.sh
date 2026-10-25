@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright 2026 Art Cashin.
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # Generic self-provisioning entrypoint.
 #
 # Makes the image portable across hosts (NAS container managers, plain Docker,

@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright 2026 Art Cashin.
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # rss-ticker — NAS setup (run over SSH).
 #
 # Must run as root. On most NAS builds that means sudo, and because sudo resets the

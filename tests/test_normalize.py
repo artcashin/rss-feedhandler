@@ -1,3 +1,6 @@
+# Copyright 2026 Art Cashin.
+# SPDX-License-Identifier: AGPL-3.0-only
+
 from pathlib import Path
 
 from rss_ticker.normalize import parse_feed, normalize_entry

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Art Cashin.
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # Scrub gate: refuse to ship private infrastructure details.
 #
 # Generic patterns live here. Machine-specific strings (your real tailnet

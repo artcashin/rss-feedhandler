@@ -223,3 +223,7 @@ on first use, so no manual setup is needed.
 
 Docs: [design spec](docs/superpowers/specs/2026-07-21-rss-news-ticker-design.md) ·
 [implementation plan](docs/superpowers/plans/2026-07-21-rss-news-ticker.md)
+
+## License
+
+AGPL-3.0-only. See [licensing](LICENSING.md); earlier MIT grants and third-party licenses remain in force.

@@ -1,3 +1,6 @@
+# Copyright 2026 Art Cashin.
+# SPDX-License-Identifier: AGPL-3.0-only
+
 import pytest
 from rss_ticker import store as store_module
 from rss_ticker.store import Store, NewArticle

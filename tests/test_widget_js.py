@@ -1,3 +1,6 @@
+# Copyright 2026 Art Cashin.
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """Run the widget's inline script under node against a fake DOM.
 
 The widget is the only place in the project where behaviour lives in

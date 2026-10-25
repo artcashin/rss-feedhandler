@@ -1,3 +1,6 @@
+# Copyright 2026 Art Cashin.
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """Deterministic proof that Store serializes cross-thread access.
 
 The production bug: Store shares one sqlite3 connection
